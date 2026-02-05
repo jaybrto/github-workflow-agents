@@ -1,0 +1,60 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gwa-runner-init
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: runner
+data:
+  entrypoint.sh: |
+    #!/bin/bash
+    set -e
+
+    REPO="${REPO:-}"
+    REDIS_HOST="${REDIS_HOST:-redis.default.svc.cluster.local}"
+    REDIS_PORT="${REDIS_PORT:-6379}"
+    POD_NAME="$(hostname)"
+
+    echo "[GWA] Starting long-lived pod for repo: ${REPO}"
+
+    # Authenticate with GitHub
+    if [ -f "/run/secrets/github_token" ]; then
+      gh auth login --with-token < /run/secrets/github_token
+    fi
+
+    # Clone repo once (main worktree)
+    if [ ! -d /home/runner/repo ]; then
+      echo "[GWA] Cloning repo..."
+      git clone "https://github.com/${REPO}.git" /home/runner/repo
+    else
+      echo "[GWA] Repo already cloned, fetching latest..."
+      git -C /home/runner/repo fetch --all --prune
+    fi
+
+    # Create worktrees directory
+    mkdir -p /home/runner/worktrees
+
+    # Register this pod in Redis with 7-day TTL
+    redis-cli -h "${REDIS_HOST}" -p "${REDIS_PORT}" \
+      SET "repo:${REPO}:pod" "${POD_NAME}" EX 604800
+
+    # Initialize tmux session if not running
+    if ! tmux has-session -t gwa-work 2>/dev/null; then
+      echo "[GWA] Starting tmux session..."
+
+      # Create main session with status window
+      tmux new-session -d -s gwa-work -x 200 -y 50 -c /home/runner/repo
+      tmux rename-window -t gwa-work:0 "status"
+      WATCH_CMD="redis-cli -h ${REDIS_HOST} -p ${REDIS_PORT}"
+      WATCH_CMD="${WATCH_CMD} SMEMBERS pod:${POD_NAME}:active_prs"
+      WATCH_CMD="${WATCH_CMD} 2>/dev/null || echo 'Waiting for work...'"
+      tmux send-keys -t gwa-work:status \
+        "watch -n 5 '${WATCH_CMD}'" Enter
+    else
+      echo "[GWA] Tmux session already running"
+    fi
+
+    echo "[GWA] Pod ready. Keeping alive..."
+    exec tail -f /dev/null
