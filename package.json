@@ -1,0 +1,26 @@
+{
+  "name": "github-workflow-agents",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "bun run build:orchestrate && bun run build:respond && bun run build:cleanup && bun run build:debug-redis && bun run build:health-check",
+    "build:orchestrate": "bun build src/orchestrate.ts --compile --outfile dist/gwa-orchestrate",
+    "build:respond": "bun build src/respond.ts --compile --outfile dist/gwa-respond",
+    "build:cleanup": "bun build src/cleanup.ts --compile --outfile dist/gwa-cleanup",
+    "build:debug-redis": "bun build src/debug-redis.ts --compile --outfile dist/gwa-debug-redis",
+    "build:health-check": "bun build src/health-check.ts --compile --outfile dist/gwa-health-check",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^0.21.0",
+    "@octokit/rest": "^21.0.0",
+    "ioredis": "^5.4.1",
+    "node-tmux": "^1.0.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -1,0 +1,24 @@
+---
+name: GWA Claude Question Response
+
+"on":
+  issue_comment:
+    types: [created, edited]
+
+env:
+  POD: gwa-runner-0
+
+jobs:
+  handle-response:
+    runs-on: self-hosted
+    if: >
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@claude-answer:')
+    steps:
+      - name: Run GWA responder
+        run: |
+          kubectl exec "$POD" -- gwa-respond \
+            --pr "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --comment "${{ github.event.comment.body }}" \
+            --actor "${{ github.actor }}"

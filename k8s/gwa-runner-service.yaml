@@ -1,0 +1,17 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gwa-runner
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: runner
+spec:
+  clusterIP: None
+  selector:
+    app: github-workflow-agents
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
