@@ -21,6 +21,27 @@ spec:
         component: runner
     spec:
       terminationGracePeriodSeconds: 30
+      imagePullSecrets:
+        - name: ghcr-secret
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+        - name: fix-permissions
+          image: busybox
+          command:
+            - sh
+            - -c
+            - |
+              chown -R 1000:1000 /home/runner/.claude
+              chown -R 1000:1000 /home/runner/worktrees
+              chown -R 1000:1000 /home/runner/repo
+          volumeMounts:
+            - name: claude-session
+              mountPath: /home/runner/.claude
+            - name: worktrees
+              mountPath: /home/runner/worktrees
+            - name: repo
+              mountPath: /home/runner/repo
       containers:
         - name: gwa-agent
           image: ghcr.io/jaybrto/github-workflow-agents:latest
@@ -37,7 +58,7 @@ spec:
             - name: REPO
               value: "jaybrto/github-workflow-agents"
             - name: REDIS_HOST
-              value: "redis.default.svc.cluster.local"
+              value: "redis-haproxy.redis-system.svc.cluster.local"
             - name: REDIS_PORT
               value: "6379"
             - name: POD_NAME
