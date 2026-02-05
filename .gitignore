@@ -137,3 +137,9 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Other files and folders to ignore
+.DS_Store
+Thumbs.db
+.history/
+.docs/

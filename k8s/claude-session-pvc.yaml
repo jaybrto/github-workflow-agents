@@ -1,0 +1,16 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: claude-session-pvc
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: session-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-claude
+  resources:
+    requests:
+      storage: 50Gi

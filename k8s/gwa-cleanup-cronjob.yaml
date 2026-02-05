@@ -1,0 +1,57 @@
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gwa-cleanup
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: cleanup
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: github-workflow-agents
+        component: cleanup
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app: github-workflow-agents
+            component: cleanup
+        spec:
+          serviceAccountName: gwa-cleanup
+          restartPolicy: OnFailure
+          containers:
+            - name: cleanup
+              image: ghcr.io/jaybrto/github-workflow-agents:latest
+              command:
+                - gwa-cleanup
+              args:
+                - "--repo"
+                - "jaybrto/github-workflow-agents"
+                - "--pod"
+                - "gwa-runner-0"
+              env:
+                - name: REDIS_HOST
+                  value: "redis.default.svc.cluster.local"
+                - name: REDIS_PORT
+                  value: "6379"
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: gwa-secrets
+                      key: github-token
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "256Mi"
+                  cpu: "200m"

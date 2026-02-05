@@ -1,0 +1,10 @@
+.git
+.github
+.claude
+.docs
+k8s
+scripts
+node_modules
+dist
+*.md
+LICENSE

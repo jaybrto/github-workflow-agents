@@ -1,0 +1,99 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: gwa-runner
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: runner
+spec:
+  serviceName: gwa-runner
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-workflow-agents
+      component: runner
+  template:
+    metadata:
+      labels:
+        app: github-workflow-agents
+        component: runner
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: gwa-agent
+          image: ghcr.io/jaybrto/github-workflow-agents:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash", "/scripts/entrypoint.sh"]
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          env:
+            - name: REPO
+              value: "jaybrto/github-workflow-agents"
+            - name: REDIS_HOST
+              value: "redis.default.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: claude-session
+              mountPath: /home/runner/.claude
+            - name: worktrees
+              mountPath: /home/runner/worktrees
+            - name: repo
+              mountPath: /home/runner/repo
+            - name: init-script
+              mountPath: /scripts/entrypoint.sh
+              subPath: entrypoint.sh
+              readOnly: true
+      volumes:
+        - name: init-script
+          configMap:
+            name: gwa-runner-init
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: claude-session
+        labels:
+          app: github-workflow-agents
+          component: session-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: longhorn-claude
+        resources:
+          requests:
+            storage: 10Gi
+    - metadata:
+        name: worktrees
+        labels:
+          app: github-workflow-agents
+          component: worktree-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: longhorn-claude
+        resources:
+          requests:
+            storage: 30Gi
+    - metadata:
+        name: repo
+        labels:
+          app: github-workflow-agents
+          component: repo-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: longhorn-claude
+        resources:
+          requests:
+            storage: 10Gi
