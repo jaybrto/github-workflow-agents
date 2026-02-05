@@ -19,14 +19,21 @@ data:
 
     echo "[GWA] Starting long-lived pod for repo: ${REPO}"
 
+    # Mark directories as safe for git
+    git config --global --add safe.directory /home/runner/repo
+    git config --global --add safe.directory '*'
+
     # Authenticate with GitHub
     if [ -f "/run/secrets/github_token" ]; then
       gh auth login --with-token < /run/secrets/github_token
     fi
 
     # Clone repo once (main worktree)
-    if [ ! -d /home/runner/repo ]; then
+    # Check for .git dir since mount point always exists
+    if [ ! -d /home/runner/repo/.git ]; then
       echo "[GWA] Cloning repo..."
+      # Clear mount point (may have lost+found) and clone
+      rm -rf /home/runner/repo/* /home/runner/repo/.[!.]* 2>/dev/null || true
       git clone "https://github.com/${REPO}.git" /home/runner/repo
     else
       echo "[GWA] Repo already cloned, fetching latest..."
