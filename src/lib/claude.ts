@@ -26,8 +26,8 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   // Prompt is a positional argument (must come first or after flags)
   args.push(prompt);
 
-  // Add output flags
-  args.push("--print", "--output-format", "stream-json");
+  // Add output flags (stream-json requires --verbose with --print)
+  args.push("--print", "--verbose", "--output-format", "stream-json");
 
   if (continueSession) {
     args.push("--continue");
