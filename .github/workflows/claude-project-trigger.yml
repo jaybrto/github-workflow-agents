@@ -1,0 +1,142 @@
+---
+name: GWA Project Trigger
+
+"on":
+  # Trigger when issue is labeled
+  issues:
+    types: [labeled]
+
+  # Trigger on project board changes (requires project scope on PAT)
+  # Note: projects_v2_item events require a PAT with 'project' scope
+  # stored as a repository secret
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to work on
+        required: true
+
+env:
+  CLAUDE_LABEL: claude
+  POD: gwa-runner-0
+
+jobs:
+  check-trigger:
+    runs-on: self-hosted
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      issue_number: ${{ steps.check.outputs.issue_number }}
+      issue_title: ${{ steps.check.outputs.issue_title }}
+      branch_name: ${{ steps.check.outputs.branch_name }}
+    steps:
+      - name: Check if should run
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHOULD_RUN=false
+          ISSUE_NUMBER=""
+          ISSUE_TITLE=""
+
+          if [ "${{ github.event_name }}" = "issues" ]; then
+            # Label-based trigger
+            if [ "${{ github.event.label.name }}" = "${{ env.CLAUDE_LABEL }}" ]; then
+              SHOULD_RUN=true
+              ISSUE_NUMBER="${{ github.event.issue.number }}"
+              ISSUE_TITLE="${{ github.event.issue.title }}"
+            fi
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual trigger
+            SHOULD_RUN=true
+            ISSUE_NUMBER="${{ github.event.inputs.issue_number }}"
+            ISSUE_TITLE=$(gh issue view "$ISSUE_NUMBER" --json title -q '.title')
+          fi
+
+          if [ "$SHOULD_RUN" = "true" ]; then
+            # Create branch name from issue
+            BRANCH_NAME="claude/issue-${ISSUE_NUMBER}"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "issue_title=${ISSUE_TITLE}" >> "$GITHUB_OUTPUT"
+            echo "branch_name=${BRANCH_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  create-pr:
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_run == 'true'
+    runs-on: self-hosted
+    outputs:
+      pr_number: ${{ steps.create.outputs.pr_number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create branch and PR
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE="${{ needs.check-trigger.outputs.issue_number }}"
+          BRANCH="${{ needs.check-trigger.outputs.branch_name }}"
+          TITLE="${{ needs.check-trigger.outputs.issue_title }}"
+
+          # Check if branch already exists
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch $BRANCH already exists"
+            # Check if PR exists
+            PR_NUMBER=$(gh pr list --head "$BRANCH" --json number -q '.[0].number')
+            if [ -n "$PR_NUMBER" ]; then
+              echo "PR #$PR_NUMBER already exists for this branch"
+              echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            # Create new branch
+            git checkout -b "$BRANCH"
+            git push -u origin "$BRANCH"
+          fi
+
+          # Create PR
+          PR_URL=$(gh pr create \
+            --title "feat: ${TITLE}" \
+            --body "$(cat <<EOF
+          ## Issue
+          Closes #${ISSUE}
+
+          ## Description
+          This PR was automatically created by GWA to address issue #${ISSUE}.
+
+          Claude will analyze the issue requirements and implement the solution.
+
+          ---
+          @claude Please implement the requirements described in issue #${ISSUE}.
+          Read the issue description carefully and implement the requested feature or fix.
+          EOF
+          )" \
+            --head "$BRANCH" \
+            --base main)
+
+          PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+          echo "Created PR #$PR_NUMBER"
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+  trigger-claude:
+    needs: [check-trigger, create-pr]
+    if: needs.create-pr.outputs.pr_number != ''
+    runs-on: self-hosted
+    steps:
+      - name: Trigger Claude on PR
+        run: |
+          PR="${{ needs.create-pr.outputs.pr_number }}"
+          ISSUE="${{ needs.check-trigger.outputs.issue_number }}"
+
+          echo "Triggering Claude to work on PR #$PR (from issue #$ISSUE)"
+
+          kubectl exec "$POD" -- gwa-orchestrate \
+            --pr "$PR" \
+            --repo "${{ github.repository }}" \
+            --trigger "pr_event" \
+            --actor "${{ github.actor }}"
