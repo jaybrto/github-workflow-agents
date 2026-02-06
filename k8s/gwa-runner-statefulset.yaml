@@ -65,6 +65,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: claude-oauth-token
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: github-token
           volumeMounts:
             - name: claude-session
               mountPath: /home/runner/.claude

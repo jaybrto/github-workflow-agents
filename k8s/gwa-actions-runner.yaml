@@ -1,0 +1,123 @@
+---
+# Service Account for the GitHub Actions runner
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gwa-actions-runner
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: actions-runner
+
+---
+# Role to allow kubectl exec into pods
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gwa-actions-runner
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: actions-runner
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gwa-actions-runner
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: actions-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gwa-actions-runner
+subjects:
+  - kind: ServiceAccount
+    name: gwa-actions-runner
+    namespace: default
+
+---
+# Deployment for the self-hosted runner using myoung34/github-runner
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gwa-actions-runner
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: actions-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-workflow-agents
+      component: actions-runner
+  template:
+    metadata:
+      labels:
+        app: github-workflow-agents
+        component: actions-runner
+    spec:
+      serviceAccountName: gwa-actions-runner
+      initContainers:
+        - name: install-kubectl
+          image: bitnami/kubectl:latest
+          command:
+            - sh
+            - -c
+            - |
+              cp /opt/bitnami/kubectl/bin/kubectl /tools/kubectl
+              chmod +x /tools/kubectl
+          volumeMounts:
+            - name: tools
+              mountPath: /tools
+      containers:
+        - name: runner
+          image: myoung34/github-runner:latest
+          env:
+            - name: RUNNER_NAME_PREFIX
+              value: gwa
+            - name: RUNNER_WORKDIR
+              value: /tmp/runner/work
+            - name: REPO_URL
+              value: https://github.com/jaybrto/github-workflow-agents
+            - name: ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: github-token
+            - name: LABELS
+              value: self-hosted,Linux,X64,gwa
+            - name: DISABLE_AUTO_UPDATE
+              value: "true"
+            - name: PATH
+              value: /tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: work
+              mountPath: /tmp/runner/work
+            - name: tools
+              mountPath: /tools
+      volumes:
+        - name: work
+          emptyDir: {}
+        - name: tools
+          emptyDir: {}
