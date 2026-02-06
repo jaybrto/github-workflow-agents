@@ -103,18 +103,13 @@ jobs:
 
             # Create initial placeholder file to enable PR creation
             mkdir -p .gwa
-            cat > .gwa/issue-${ISSUE}.md << PLACEHOLDER
-# Issue #${ISSUE}: ${TITLE}
-
-This file tracks Claude's work on this issue.
-
-## Status
-- Created: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-- Status: In Progress
-
-## Instructions
-Claude will implement the requirements from issue #${ISSUE}.
-PLACEHOLDER
+            echo "# Issue #${ISSUE}: ${TITLE}" > .gwa/issue-${ISSUE}.md
+            echo "" >> .gwa/issue-${ISSUE}.md
+            echo "This file tracks Claude's work on this issue." >> .gwa/issue-${ISSUE}.md
+            echo "" >> .gwa/issue-${ISSUE}.md
+            echo "## Status" >> .gwa/issue-${ISSUE}.md
+            echo "- Created: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> .gwa/issue-${ISSUE}.md
+            echo "- Status: In Progress" >> .gwa/issue-${ISSUE}.md
 
             git add .gwa/
             git commit -m "chore: initialize branch for issue #${ISSUE}"
