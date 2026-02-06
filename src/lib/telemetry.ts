@@ -41,10 +41,13 @@ const resource = resourceFromAttributes({
   "pod.name": process.env.POD_NAME || "unknown",
 });
 
-// Create exporters
-const traceExporter = new OTLPTraceExporter();
-const metricExporter = new OTLPMetricExporter();
-const logExporter = new OTLPLogExporter();
+// OTLP endpoint from environment
+const OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://localhost:4317";
+
+// Create exporters with explicit endpoint configuration
+const traceExporter = new OTLPTraceExporter({ url: OTLP_ENDPOINT });
+const metricExporter = new OTLPMetricExporter({ url: OTLP_ENDPOINT });
+const logExporter = new OTLPLogExporter({ url: OTLP_ENDPOINT });
 
 // Configure LoggerProvider for OTLP log export
 const logRecordProcessor = new BatchLogRecordProcessor(logExporter, {
