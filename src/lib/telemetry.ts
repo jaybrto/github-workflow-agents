@@ -7,7 +7,7 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-grpc";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
-import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
@@ -47,11 +47,8 @@ const metricExporter = new OTLPMetricExporter({ url: OTLP_ENDPOINT });
 const logExporter = new OTLPLogExporter({ url: OTLP_ENDPOINT });
 
 // Configure LoggerProvider for OTLP log export
-const logRecordProcessor = new BatchLogRecordProcessor(logExporter, {
-  maxQueueSize: 512,
-  maxExportBatchSize: 256,
-  scheduledDelayMillis: 1000, // Fast flush for CLI processes
-});
+// Using SimpleLogRecordProcessor for immediate export (critical for CLI processes)
+const logRecordProcessor = new SimpleLogRecordProcessor(logExporter);
 
 // Configure SDK with fast export for CLI processes (including logs)
 const sdk = new NodeSDK({
