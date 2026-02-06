@@ -55,6 +55,7 @@ spec:
               memory: "8Gi"
               cpu: "4000m"
           env:
+            # Application config
             - name: REPO
               value: "jaybrto/github-workflow-agents"
             - name: REDIS_HOST
@@ -65,6 +66,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # Secrets
             - name: CLAUDE_CODE_OAUTH_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -75,6 +77,44 @@ spec:
                 secretKeyRef:
                   name: gwa-secrets
                   key: github-token
+            # OpenTelemetry Configuration
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://alloy.alloy.svc.cluster.local:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_SERVICE_NAME
+              value: "github-workflow-agents"
+            - name: OTEL_SERVICE_VERSION
+              value: "1.0.0"
+            - name: DEPLOYMENT_ENVIRONMENT
+              value: "production"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=production,service.namespace=gwa,team=platform"
+            # Enable all signals
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+            # Fast flush for CLI processes
+            - name: OTEL_BSP_SCHEDULE_DELAY
+              value: "1000"
+            - name: OTEL_BSP_MAX_QUEUE_SIZE
+              value: "512"
+            - name: OTEL_BSP_MAX_EXPORT_BATCH_SIZE
+              value: "256"
+            - name: OTEL_BSP_EXPORT_TIMEOUT
+              value: "5000"
+            # Sampling (100% of traces)
+            - name: OTEL_TRACES_SAMPLER
+              value: "parentbased_traceidratio"
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: "1.0"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
           volumeMounts:
             - name: claude-session
               mountPath: /home/runner/.claude

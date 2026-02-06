@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+// Telemetry MUST be imported first
+import { withSpan, Metrics, shutdown as shutdownTelemetry, log } from "./lib/telemetry.js";
+
 import { parseArgs } from "util";
 import type { OrchestrateArgs, PRContext } from "./lib/types.js";
 import * as redis from "./lib/redis.js";
@@ -31,6 +34,7 @@ async function main() {
 
   if (!args.pr || !args.repo) {
     console.error("Usage: gwa-orchestrate --pr <number> --repo <owner/repo>");
+    await shutdownTelemetry();
     process.exit(1);
   }
 
@@ -41,14 +45,47 @@ async function main() {
     repoName,
   };
 
-  console.log(`[GWA] Starting work on PR #${ctx.pr} (${ctx.repo})`);
-  console.log(`[GWA] Trigger: ${ctx.trigger}, Actor: ${ctx.actor}`);
+  const startTime = Date.now();
+  let success = false;
 
   try {
-    await orchestrate(ctx);
-    console.log("[GWA] Orchestration completed successfully");
+    await withSpan(
+      "orchestrate",
+      async (span) => {
+        span.setAttribute("pr.number", ctx.pr);
+        span.setAttribute("pr.repo", ctx.repo);
+        span.setAttribute("pr.trigger", ctx.trigger);
+        span.setAttribute("pr.actor", ctx.actor);
+
+        log("info", `Starting work on PR #${ctx.pr}`, {
+          repo: ctx.repo,
+          trigger: ctx.trigger,
+          actor: ctx.actor,
+        });
+
+        await orchestrate(ctx);
+        success = true;
+
+        log("info", "Orchestration completed successfully", {
+          repo: ctx.repo,
+          pr: ctx.pr,
+        });
+      },
+      {
+        attributes: {
+          "gwa.operation": "orchestrate",
+          "pr.number": ctx.pr,
+          "pr.repo": ctx.repo,
+        },
+      }
+    );
   } catch (error) {
-    console.error("[GWA] Fatal error:", error);
+    log("error", "Orchestration failed", {
+      repo: ctx.repo,
+      pr: ctx.pr,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
     await github.postError(
       ctx.owner,
       ctx.repoName,
@@ -56,118 +93,184 @@ async function main() {
       "Orchestration failed",
       error instanceof Error ? error.message : String(error)
     );
-    process.exit(1);
   } finally {
+    // Record metrics
+    Metrics.recordOrchestration(ctx.repo, ctx.pr, ctx.trigger, success);
+    Metrics.recordOrchestrationDuration(Date.now() - startTime, ctx.repo, ctx.trigger);
+
     await redis.closeRedis();
+    await shutdownTelemetry();
   }
 
-  // Explicit exit to ensure process terminates
-  process.exit(0);
+  process.exit(success ? 0 : 1);
 }
 
 async function orchestrate(ctx: PRContext): Promise<void> {
   // 1. Ensure tmux session exists
-  console.log("[GWA] Ensuring tmux session...");
-  await tmux.ensureSession();
+  await withSpan("tmux.ensureSession", async () => {
+    log("debug", "Ensuring tmux session");
+    await tmux.ensureSession();
+  });
 
   // 2. Get branch name if not provided
   let branch = ctx.branch;
   if (!branch) {
-    console.log("[GWA] Fetching branch name from GitHub...");
-    branch = await github.getPRBranch(ctx.owner, ctx.repoName, ctx.pr);
+    branch = await withSpan(
+      "github.getPRBranch",
+      async (span) => {
+        log("debug", "Fetching branch name from GitHub");
+        const branchName = await github.getPRBranch(ctx.owner, ctx.repoName, ctx.pr);
+        span.setAttribute("pr.branch", branchName);
+        Metrics.recordGitHubApiCall("getPRBranch", true);
+        return branchName;
+      },
+      { attributes: { "github.operation": "getPRBranch" } }
+    );
   }
 
   // 3. Setup or update git worktree
-  console.log("[GWA] Setting up git worktree...");
-  await git.fetchAll();
-
   let worktreePath: string;
-  const exists = await git.worktreeExists(ctx.pr);
+  await withSpan("git.setup", async (span) => {
+    log("debug", "Setting up git worktree");
+    await git.fetchAll();
 
-  if (exists) {
-    console.log("[GWA] Worktree exists, updating...");
-    await git.updateWorktree(ctx.pr, branch);
-    worktreePath = git.getWorktreePath(ctx.pr);
-  } else {
-    console.log("[GWA] Creating new worktree...");
-    worktreePath = await git.createWorktree(ctx.pr, branch);
-  }
+    const exists = await git.worktreeExists(ctx.pr);
+    span.setAttribute("worktree.exists", exists);
+
+    if (exists) {
+      log("debug", "Worktree exists, updating");
+      await git.updateWorktree(ctx.pr, branch!);
+      worktreePath = git.getWorktreePath(ctx.pr);
+    } else {
+      log("debug", "Creating new worktree");
+      worktreePath = await git.createWorktree(ctx.pr, branch!);
+    }
+
+    span.setAttribute("worktree.path", worktreePath);
+  });
 
   // 4. Get or create session in Redis
-  let session = await redis.getSession(ctx.repo, ctx.pr);
+  let session = await withSpan("redis.getSession", async () => {
+    const s = await redis.getSession(ctx.repo, ctx.pr);
+    Metrics.recordRedisOperation("getSession", true);
+    return s;
+  });
+
   let tmuxWindow: number;
 
   if (session) {
-    console.log(`[GWA] Found existing session in window ${session.tmuxWindow}`);
+    log("debug", `Found existing session in window ${session.tmuxWindow}`);
     tmuxWindow = session.tmuxWindow;
     await redis.touchSession(ctx.repo, ctx.pr);
 
     // Verify window still exists
     if (!(await tmux.windowExists(tmuxWindow))) {
-      console.log("[GWA] Window gone, recreating...");
-      tmuxWindow = await tmux.createWindow(`pr-${ctx.pr}`, worktreePath);
+      log("debug", "Window gone, recreating");
+      tmuxWindow = await tmux.createWindow(`pr-${ctx.pr}`, worktreePath!);
       await redis.updateSessionStatus(ctx.repo, ctx.pr, "active");
     }
   } else {
-    console.log("[GWA] Creating new session...");
-    tmuxWindow = await tmux.createWindow(`pr-${ctx.pr}`, worktreePath);
+    log("debug", "Creating new session");
+    tmuxWindow = await tmux.createWindow(`pr-${ctx.pr}`, worktreePath!);
 
-    await redis.createSession(ctx.repo, ctx.pr, {
-      tmuxWindow,
-      podName: process.env.POD_NAME || "gwa-runner-0",
-      worktreePath,
-      createdAt: Date.now(),
-      status: "active",
+    await withSpan("redis.createSession", async () => {
+      await redis.createSession(ctx.repo, ctx.pr, {
+        tmuxWindow,
+        podName: process.env.POD_NAME || "gwa-runner-0",
+        worktreePath: worktreePath!,
+        createdAt: Date.now(),
+        status: "active",
+      });
+      Metrics.recordRedisOperation("createSession", true);
+      Metrics.sessionStarted();
     });
   }
 
   // 5. Build prompt based on trigger
   const prompt = buildPrompt(ctx);
-  console.log("[GWA] Prompt:", prompt.substring(0, 100) + "...");
+  log("debug", "Built prompt", { promptLength: prompt.length });
 
   // 6. Run Claude
-  console.log("[GWA] Running Claude...");
-  await redis.updateSessionStatus(ctx.repo, ctx.pr, "active");
+  await withSpan(
+    "claude.run",
+    async (span) => {
+      span.setAttribute("claude.continueSession", !!session);
+      log("info", "Running Claude", {
+        continueSession: !!session,
+        workingDir: worktreePath!,
+      });
 
-  const result = await claude.runClaude({
-    prompt,
-    workingDir: worktreePath,
-    continueSession: !!session,
-  });
+      await redis.updateSessionStatus(ctx.repo, ctx.pr, "active");
 
-  // 7. Handle result
-  if (result.askedQuestion) {
-    console.log("[GWA] Claude asked a question");
-    await redis.updateSessionStatus(ctx.repo, ctx.pr, "waiting");
-    await redis.storeQuestion(ctx.repo, ctx.pr, result.askedQuestion);
-    await github.postQuestion(
-      ctx.owner,
-      ctx.repoName,
-      ctx.pr,
-      result.askedQuestion,
-      result.output.slice(-500) // Last 500 chars as context
-    );
-  } else if (result.success) {
-    console.log("[GWA] Claude completed successfully");
-    await redis.updateSessionStatus(ctx.repo, ctx.pr, "completed");
-    await github.postWorkComplete(
-      ctx.owner,
-      ctx.repoName,
-      ctx.pr,
-      "Work completed",
-      result.output.slice(-2000)
-    );
-  } else {
-    console.log("[GWA] Claude encountered an error");
-    await redis.updateSessionStatus(ctx.repo, ctx.pr, "error");
-    await github.postError(
-      ctx.owner,
-      ctx.repoName,
-      ctx.pr,
-      result.error || "Unknown error",
-      result.output.slice(-2000)
-    );
-  }
+      const claudeStartTime = Date.now();
+      const result = await claude.runClaude({
+        prompt,
+        workingDir: worktreePath!,
+        continueSession: !!session,
+      });
+      const claudeDuration = Date.now() - claudeStartTime;
+
+      // Determine outcome
+      let outcome: "success" | "error" | "question" | "timeout";
+      if (result.askedQuestion) {
+        outcome = "question";
+      } else if (result.success) {
+        outcome = "success";
+      } else if (result.error?.includes("timeout")) {
+        outcome = "timeout";
+      } else {
+        outcome = "error";
+      }
+
+      span.setAttribute("claude.outcome", outcome);
+      span.setAttribute("claude.durationMs", claudeDuration);
+      Metrics.recordClaudeInvocation(outcome, !!session);
+      Metrics.recordClaudeDuration(claudeDuration, outcome);
+
+      // 7. Handle result
+      if (result.askedQuestion) {
+        log("info", "Claude asked a question", { pr: ctx.pr });
+        await redis.updateSessionStatus(ctx.repo, ctx.pr, "waiting");
+        await redis.storeQuestion(ctx.repo, ctx.pr, result.askedQuestion);
+        await github.postQuestion(
+          ctx.owner,
+          ctx.repoName,
+          ctx.pr,
+          result.askedQuestion,
+          result.output.slice(-500)
+        );
+        Metrics.recordGitHubApiCall("postQuestion", true);
+      } else if (result.success) {
+        log("info", "Claude completed successfully", { pr: ctx.pr });
+        await redis.updateSessionStatus(ctx.repo, ctx.pr, "completed");
+        await github.postWorkComplete(
+          ctx.owner,
+          ctx.repoName,
+          ctx.pr,
+          "Work completed",
+          result.output.slice(-2000)
+        );
+        Metrics.recordGitHubApiCall("postWorkComplete", true);
+        Metrics.sessionEnded();
+      } else {
+        log("error", "Claude encountered an error", {
+          pr: ctx.pr,
+          error: result.error || "Unknown error",
+        });
+        await redis.updateSessionStatus(ctx.repo, ctx.pr, "error");
+        await github.postError(
+          ctx.owner,
+          ctx.repoName,
+          ctx.pr,
+          result.error || "Unknown error",
+          result.output.slice(-2000)
+        );
+        Metrics.recordGitHubApiCall("postError", true);
+        Metrics.sessionEnded();
+      }
+    },
+    { attributes: { "claude.operation": "runClaude" } }
+  );
 }
 
 function buildPrompt(ctx: PRContext): string {

@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+// Telemetry MUST be imported first
+import { withSpan, Metrics, shutdown as shutdownTelemetry, log } from "./lib/telemetry.js";
+
 import { parseArgs } from "util";
 import type { CleanupArgs } from "./lib/types.js";
 import * as redis from "./lib/redis.js";
@@ -24,32 +27,61 @@ async function main() {
 
   if (!args.repo) {
     console.error("Usage: gwa-cleanup --repo <owner/repo> [--pod <pod>] [--dry-run]");
+    await shutdownTelemetry();
     process.exit(1);
   }
 
   const [owner, repoName] = args.repo.split("/");
-
-  console.log(`[GWA Cleanup] Starting cleanup for ${args.repo}`);
-  console.log(`[GWA Cleanup] Dry run: ${args.dryRun}`);
+  let cleanedCount = 0;
 
   try {
-    await cleanup(args, owner, repoName);
+    cleanedCount = await withSpan(
+      "cleanup",
+      async (span) => {
+        span.setAttribute("cleanup.repo", args.repo);
+        span.setAttribute("cleanup.dryRun", args.dryRun ?? false);
+
+        log("info", `Starting cleanup for ${args.repo}`, {
+          dryRun: args.dryRun ?? false,
+        });
+
+        return await cleanup(args, owner, repoName);
+      },
+      {
+        attributes: {
+          "gwa.operation": "cleanup",
+          "cleanup.repo": args.repo,
+          "cleanup.dryRun": args.dryRun ?? false,
+        },
+      }
+    );
   } catch (error) {
-    console.error("[GWA Cleanup] Fatal error:", error);
-    process.exit(1);
+    log("error", "Cleanup failed", {
+      repo: args.repo,
+      error: error instanceof Error ? error.message : String(error),
+    });
   } finally {
+    Metrics.recordCleanup(args.repo, cleanedCount);
     await redis.closeRedis();
+    await shutdownTelemetry();
   }
+
+  process.exit(0);
 }
 
 async function cleanup(
   args: CleanupArgs,
   owner: string,
   repoName: string
-): Promise<void> {
+): Promise<number> {
   // Get all PR keys from Redis
-  const allKeys = await redis.getAllPRKeys();
-  console.log(`[GWA Cleanup] Found ${allKeys.length} PR keys in Redis`);
+  const allKeys = await withSpan("redis.getAllPRKeys", async () => {
+    const keys = await redis.getAllPRKeys();
+    Metrics.recordRedisOperation("getAllPRKeys", true);
+    return keys;
+  });
+
+  log("info", `Found ${allKeys.length} PR keys in Redis`);
 
   // Filter to keys matching our repo
   const repoPattern = `pr:${args.repo}:`;
@@ -57,7 +89,7 @@ async function cleanup(
     (key) => key.startsWith(repoPattern) && !key.includes(":question")
   );
 
-  console.log(`[GWA Cleanup] ${prKeys.length} keys match repo ${args.repo}`);
+  log("info", `${prKeys.length} keys match repo ${args.repo}`);
 
   let cleaned = 0;
   let skipped = 0;
@@ -68,62 +100,81 @@ async function cleanup(
     const prNum = parseInt(parts[parts.length - 1], 10);
 
     if (isNaN(prNum)) {
-      console.log(`[GWA Cleanup] Skipping invalid key: ${key}`);
+      log("debug", `Skipping invalid key: ${key}`);
       skipped++;
       continue;
     }
 
     // Check if PR is still open
-    const isOpen = await github.isPROpen(owner, repoName, prNum);
+    const isOpen = await withSpan(
+      "github.isPROpen",
+      async () => {
+        const open = await github.isPROpen(owner, repoName, prNum);
+        Metrics.recordGitHubApiCall("isPROpen", true);
+        return open;
+      },
+      { attributes: { "pr.number": prNum } }
+    );
 
     if (isOpen) {
-      console.log(`[GWA Cleanup] PR #${prNum} is still open, skipping`);
+      log("debug", `PR #${prNum} is still open, skipping`);
       skipped++;
       continue;
     }
 
-    console.log(`[GWA Cleanup] PR #${prNum} is closed, cleaning up...`);
+    log("info", `PR #${prNum} is closed, cleaning up`);
 
     // Get session data before deleting
     const session = await redis.getSession(args.repo, prNum);
 
     if (args.dryRun) {
-      console.log(`[GWA Cleanup] [DRY RUN] Would clean up PR #${prNum}`);
-      if (session) {
-        console.log(`[GWA Cleanup] [DRY RUN]   - Remove tmux window ${session.tmuxWindow}`);
-        console.log(`[GWA Cleanup] [DRY RUN]   - Remove worktree ${session.worktreePath}`);
-      }
-      console.log(`[GWA Cleanup] [DRY RUN]   - Delete Redis keys`);
+      log("info", `[DRY RUN] Would clean up PR #${prNum}`, {
+        tmuxWindow: session?.tmuxWindow ?? -1,
+        worktreePath: session?.worktreePath ?? "unknown",
+      });
       cleaned++;
       continue;
     }
 
-    // Clean up tmux window
-    if (session && (await tmux.windowExists(session.tmuxWindow))) {
-      try {
-        await tmux.killWindow(session.tmuxWindow);
-        console.log(`[GWA Cleanup]   Removed tmux window ${session.tmuxWindow}`);
-      } catch (error) {
-        console.log(`[GWA Cleanup]   Failed to remove tmux window: ${error}`);
-      }
-    }
+    await withSpan(
+      "cleanupPR",
+      async (span) => {
+        span.setAttribute("pr.number", prNum);
 
-    // Clean up git worktree
-    try {
-      await git.removeWorktree(prNum);
-      console.log(`[GWA Cleanup]   Removed worktree for PR #${prNum}`);
-    } catch (error) {
-      console.log(`[GWA Cleanup]   Failed to remove worktree: ${error}`);
-    }
+        // Clean up tmux window
+        if (session && (await tmux.windowExists(session.tmuxWindow))) {
+          try {
+            await tmux.killWindow(session.tmuxWindow);
+            log("debug", `Removed tmux window ${session.tmuxWindow}`);
+          } catch (error) {
+            log("warn", `Failed to remove tmux window: ${error}`);
+          }
+        }
 
-    // Clean up Redis
-    await redis.deletePRData(args.repo, prNum);
-    console.log(`[GWA Cleanup]   Deleted Redis data for PR #${prNum}`);
+        // Clean up git worktree
+        try {
+          await git.removeWorktree(prNum);
+          log("debug", `Removed worktree for PR #${prNum}`);
+        } catch (error) {
+          log("warn", `Failed to remove worktree: ${error}`);
+        }
+
+        // Clean up Redis
+        await redis.deletePRData(args.repo, prNum);
+        Metrics.recordRedisOperation("deletePRData", true);
+        log("debug", `Deleted Redis data for PR #${prNum}`);
+
+        Metrics.sessionEnded();
+      },
+      { attributes: { "cleanup.pr": prNum } }
+    );
 
     cleaned++;
   }
 
-  console.log(`[GWA Cleanup] Complete: ${cleaned} cleaned, ${skipped} skipped`);
+  log("info", `Cleanup complete: ${cleaned} cleaned, ${skipped} skipped`);
+
+  return cleaned;
 }
 
 main();
