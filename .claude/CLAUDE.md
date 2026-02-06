@@ -13,8 +13,7 @@ Automated Claude Code integration for GitHub PRs with persistent sessions.
 
 ```
 ├── .claude/              # Claude configuration
-│   ├── CLAUDE.md         # This file
-│   └── commands/         # Slash commands
+│   └── CLAUDE.md         # This file
 ├── .github/workflows/    # GitHub Actions (thin triggers)
 ├── k8s/                  # Kubernetes manifests
 ├── scripts/              # Shell scripts (orchestration only)
@@ -81,6 +80,62 @@ If you need clarification:
 - Session data persists on Longhorn across pod restarts
 - Redis tracks PR→tmux window mappings (7-day TTL)
 - Use `--continue` flag to resume previous conversations
+
+---
+
+## Workflow: Processing an Issue
+
+When asked to work on or implement an issue, follow this workflow:
+
+1. **Fetch issue details** from GitHub using `gh issue view`
+2. **Analyze requirements** and plan the implementation
+3. **Implement the solution** following project conventions
+4. **Run tests** (`bun test`) to verify changes work
+5. **Commit changes** with conventional commit messages
+6. **Push changes** to the PR branch
+
+### Implementation Checklist
+- Code follows project conventions (Bun, TypeScript, no Python)
+- No hardcoded secrets or credentials
+- Error handling is appropriate
+- Tests cover new functionality
+- No unnecessary dependencies added
+
+### If Requirements Are Unclear
+- Ask for clarification using the question tool
+- Break large issues into subtasks if needed
+- Always verify assumptions before implementing
+
+---
+
+## Workflow: Reviewing a PR
+
+When asked to review PR changes, follow this workflow:
+
+1. **Fetch PR diff** using `gh pr diff`
+2. **Analyze code changes** for:
+   - Logic errors or bugs
+   - Security vulnerabilities
+   - Performance issues
+   - Code style consistency
+   - Missing tests
+3. **Post review comments** on specific lines if issues found
+4. **Provide overall summary** of the review
+
+### Review Checklist
+- [ ] Code follows project conventions
+- [ ] No hardcoded secrets or credentials
+- [ ] Error handling is appropriate
+- [ ] Tests cover new functionality
+- [ ] No unnecessary dependencies added
+- [ ] Documentation updated if needed
+
+### Review Guidelines
+- Reviews are constructive, not nitpicky
+- Suggest specific improvements, not vague feedback
+- Approve if changes are good, request changes if not
+
+---
 
 ## Testing
 

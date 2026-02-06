@@ -23,6 +23,10 @@ import {
   type Meter,
 } from "@opentelemetry/api";
 
+// Auto-instrumentation for libraries
+import { IORedisInstrumentation } from "@opentelemetry/instrumentation-ioredis";
+import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
+
 // Service identity from env vars
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || "github-workflow-agents";
 const SERVICE_VERSION = process.env.OTEL_SERVICE_VERSION || "1.0.0";
@@ -63,6 +67,19 @@ const sdk = new NodeSDK({
     exportIntervalMillis: 5000, // Fast export for short-lived CLI
   }),
   logRecordProcessors: [logRecordProcessor],
+  // Auto-instrumentation for ioredis and HTTP (covers @octokit/rest, @kubernetes/client-node)
+  instrumentations: [
+    new IORedisInstrumentation({
+      dbStatementSerializer: (cmdName, cmdArgs) => {
+        // Include command name and key (first arg) but not values for security
+        return cmdArgs.length > 0 ? `${cmdName} ${cmdArgs[0]}` : cmdName;
+      },
+    }),
+    new HttpInstrumentation({
+      // Ignore health check endpoints to reduce noise
+      ignoreIncomingRequestHook: (req) => req.url === "/health",
+    }),
+  ],
 });
 
 // Start SDK - this initializes tracing, metrics, and logs providers

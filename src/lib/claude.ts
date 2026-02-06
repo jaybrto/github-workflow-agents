@@ -1,4 +1,5 @@
 import type { ClaudeStreamEvent } from "./types.js";
+import { withSpan, Metrics, log } from "./telemetry.js";
 
 export interface ClaudeOptions {
   prompt: string;
@@ -20,6 +21,73 @@ export interface ClaudeResult {
  */
 export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   const { prompt, workingDir, continueSession = false, timeout = 3600000 } = options;
+  const startTime = Date.now();
+
+  return withSpan(
+    "claude.run",
+    async (span) => {
+      // Set span attributes
+      span.setAttribute("claude.prompt_length", prompt.length);
+      span.setAttribute("claude.working_dir", workingDir);
+      span.setAttribute("claude.continue_session", continueSession);
+      span.setAttribute("claude.timeout_ms", timeout);
+      span.setAttribute("claude.model", "opus");
+      span.setAttribute("claude.fallback_model", "sonnet");
+
+      log("info", "Starting Claude invocation", {
+        prompt_length: prompt.length,
+        continue_session: continueSession,
+        working_dir: workingDir,
+      });
+
+      const result = await runClaudeInternal(options);
+
+      // Calculate duration and record metrics
+      const durationMs = Date.now() - startTime;
+      const outcome = result.askedQuestion
+        ? "question"
+        : result.success
+          ? "success"
+          : result.error?.includes("timeout")
+            ? "timeout"
+            : "error";
+
+      span.setAttribute("claude.outcome", outcome);
+      span.setAttribute("claude.duration_ms", durationMs);
+      span.setAttribute("claude.output_length", result.output.length);
+      if (result.askedQuestion) {
+        span.setAttribute("claude.asked_question", true);
+      }
+      if (result.error) {
+        span.setAttribute("claude.error", result.error);
+      }
+
+      // Record metrics
+      Metrics.recordClaudeInvocation(outcome, continueSession);
+      Metrics.recordClaudeDuration(durationMs, outcome);
+
+      log("info", "Claude invocation completed", {
+        outcome,
+        duration_ms: durationMs,
+        output_length: result.output.length,
+        asked_question: !!result.askedQuestion,
+      });
+
+      return result;
+    },
+    {
+      attributes: {
+        "claude.prompt_preview": prompt.substring(0, 100),
+      },
+    }
+  );
+}
+
+/**
+ * Internal implementation of runClaude without instrumentation.
+ */
+async function runClaudeInternal(options: ClaudeOptions): Promise<ClaudeResult> {
+  const { prompt, workingDir, continueSession = false, timeout = 3600000 } = options;
 
   const args: string[] = [];
 
@@ -28,6 +96,12 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
 
   // Add output flags (stream-json requires --verbose with --print)
   args.push("--print", "--verbose", "--output-format", "stream-json");
+
+  // Model selection: prefer Opus, fall back to Sonnet
+  args.push("--model", "opus", "--fallback-model", "sonnet");
+
+  // Skip permission prompts in headless mode
+  args.push("--dangerously-skip-permissions");
 
   if (continueSession) {
     args.push("--continue");
