@@ -5,7 +5,13 @@
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-grpc";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import {
+  LoggerProvider,
+  BatchLogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
   ATTR_SERVICE_NAME,
@@ -38,6 +44,21 @@ const resource = resourceFromAttributes({
 // Create exporters
 const traceExporter = new OTLPTraceExporter();
 const metricExporter = new OTLPMetricExporter();
+const logExporter = new OTLPLogExporter();
+
+// Configure LoggerProvider for OTLP log export
+const logRecordProcessor = new BatchLogRecordProcessor(logExporter, {
+  maxQueueSize: 512,
+  maxExportBatchSize: 256,
+  scheduledDelayMillis: 1000, // Fast flush for CLI processes
+});
+// Note: logRecordProcessors is supported at runtime but types are outdated
+const loggerProvider = new LoggerProvider({
+  resource,
+  logRecordProcessors: [logRecordProcessor],
+} as ConstructorParameters<typeof LoggerProvider>[0]);
+logs.setGlobalLoggerProvider(loggerProvider);
+const logger = logs.getLogger(SERVICE_NAME, SERVICE_VERSION);
 
 // Configure SDK with fast export for CLI processes
 const sdk = new NodeSDK({
@@ -152,8 +173,26 @@ export async function withSpan<T>(
 }
 
 /**
- * Log a message to console (logs will be captured by Loki via stdout).
- * Includes trace context for correlation.
+ * Map log level to OpenTelemetry SeverityNumber.
+ */
+function getSeverityNumber(level: string): SeverityNumber {
+  switch (level) {
+    case "debug":
+      return SeverityNumber.DEBUG;
+    case "info":
+      return SeverityNumber.INFO;
+    case "warn":
+      return SeverityNumber.WARN;
+    case "error":
+      return SeverityNumber.ERROR;
+    default:
+      return SeverityNumber.INFO;
+  }
+}
+
+/**
+ * Log a message via OTLP to Loki with trace correlation.
+ * Also outputs to console for local debugging.
  */
 export function log(
   level: "info" | "warn" | "error" | "debug",
@@ -163,6 +202,23 @@ export function log(
   const activeSpan = trace.getActiveSpan();
   const spanContext = activeSpan?.spanContext();
 
+  // Emit to OTLP logger
+  logger.emit({
+    severityNumber: getSeverityNumber(level),
+    severityText: level.toUpperCase(),
+    body: message,
+    attributes: {
+      "log.level": level,
+      "service.name": SERVICE_NAME,
+      ...(spanContext && {
+        "trace_id": spanContext.traceId,
+        "span_id": spanContext.spanId,
+      }),
+      ...attributes,
+    },
+  });
+
+  // Also output to console for local debugging
   const logEntry = {
     level,
     message,
@@ -174,8 +230,6 @@ export function log(
     }),
     ...attributes,
   };
-
-  // Output structured JSON for Loki to parse
   const logFn = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
   logFn(JSON.stringify(logEntry));
 }
@@ -258,11 +312,27 @@ export async function shutdown(): Promise<void> {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  log("info", "Shutting down telemetry");
+  // Log before shutting down the logger
+  console.log(JSON.stringify({
+    level: "info",
+    message: "Shutting down telemetry",
+    timestamp: new Date().toISOString(),
+    service: SERVICE_NAME,
+  }));
 
   try {
-    await sdk.shutdown();
-    log("info", "Telemetry shutdown complete");
+    // Flush and shutdown all providers
+    await Promise.all([
+      loggerProvider.forceFlush(),
+      loggerProvider.shutdown(),
+      sdk.shutdown(),
+    ]);
+    console.log(JSON.stringify({
+      level: "info",
+      message: "Telemetry shutdown complete",
+      timestamp: new Date().toISOString(),
+      service: SERVICE_NAME,
+    }));
   } catch (error) {
     console.error("[OTEL] Error during shutdown:", error);
   }
