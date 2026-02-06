@@ -46,6 +46,7 @@ async function main() {
 
   try {
     await orchestrate(ctx);
+    console.log("[GWA] Orchestration completed successfully");
   } catch (error) {
     console.error("[GWA] Fatal error:", error);
     await github.postError(
@@ -59,6 +60,9 @@ async function main() {
   } finally {
     await redis.closeRedis();
   }
+
+  // Explicit exit to ensure process terminates
+  process.exit(0);
 }
 
 async function orchestrate(ctx: PRContext): Promise<void> {
