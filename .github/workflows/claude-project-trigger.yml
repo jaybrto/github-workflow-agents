@@ -96,6 +96,28 @@ jobs:
           else
             # Create new branch
             git checkout -b "$BRANCH"
+
+            # Configure git for commits
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+
+            # Create initial placeholder file to enable PR creation
+            mkdir -p .gwa
+            cat > .gwa/issue-${ISSUE}.md << PLACEHOLDER
+# Issue #${ISSUE}: ${TITLE}
+
+This file tracks Claude's work on this issue.
+
+## Status
+- Created: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+- Status: In Progress
+
+## Instructions
+Claude will implement the requirements from issue #${ISSUE}.
+PLACEHOLDER
+
+            git add .gwa/
+            git commit -m "chore: initialize branch for issue #${ISSUE}"
             git push -u origin "$BRANCH"
           fi
 
