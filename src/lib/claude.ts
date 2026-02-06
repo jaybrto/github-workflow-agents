@@ -21,13 +21,17 @@ export interface ClaudeResult {
 export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
   const { prompt, workingDir, continueSession = false, timeout = 3600000 } = options;
 
-  const args = ["--print", "--output-format", "stream-json"];
+  const args: string[] = [];
+
+  // Prompt is a positional argument (must come first or after flags)
+  args.push(prompt);
+
+  // Add output flags
+  args.push("--print", "--output-format", "stream-json");
 
   if (continueSession) {
     args.push("--continue");
   }
-
-  args.push("--prompt", prompt);
 
   const proc = Bun.spawn(["claude", ...args], {
     cwd: workingDir,
