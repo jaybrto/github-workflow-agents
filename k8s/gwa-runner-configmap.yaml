@@ -23,9 +23,11 @@ data:
     git config --global --add safe.directory /home/runner/repo
     git config --global --add safe.directory '*'
 
-    # Authenticate with GitHub
-    if [ -f "/run/secrets/github_token" ]; then
-      gh auth login --with-token < /run/secrets/github_token
+    # GitHub CLI uses GITHUB_TOKEN env var automatically
+    # Just configure git to use gh for auth
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      gh auth setup-git 2>/dev/null || true
+      git config --global credential.helper '!gh auth git-credential'
     fi
 
     # Clone repo once (main worktree)
