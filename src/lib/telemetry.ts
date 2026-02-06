@@ -47,7 +47,8 @@ const OTLP_HTTP_ENDPOINT = OTLP_ENDPOINT.replace(":4317", ":4318");
 const traceExporter = new OTLPTraceExporter({ url: OTLP_ENDPOINT });
 const metricExporter = new OTLPMetricExporter({ url: OTLP_ENDPOINT });
 // Use HTTP exporter for logs (more reliable for short-lived CLI processes)
-const logExporter = new OTLPLogExporter({ url: `${OTLP_HTTP_ENDPOINT}/v1/logs` });
+// The exporter automatically appends /v1/logs to the endpoint
+const logExporter = new OTLPLogExporter({ url: OTLP_HTTP_ENDPOINT });
 
 // Configure LoggerProvider for OTLP log export
 // Using SimpleLogRecordProcessor for immediate export (critical for CLI processes)
