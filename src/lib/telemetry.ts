@@ -7,10 +7,7 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-grpc";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
-import {
-  LoggerProvider,
-  BatchLogRecordProcessor,
-} from "@opentelemetry/sdk-logs";
+import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
@@ -55,15 +52,8 @@ const logRecordProcessor = new BatchLogRecordProcessor(logExporter, {
   maxExportBatchSize: 256,
   scheduledDelayMillis: 1000, // Fast flush for CLI processes
 });
-// Note: logRecordProcessors is supported at runtime but types are outdated
-const loggerProvider = new LoggerProvider({
-  resource,
-  logRecordProcessors: [logRecordProcessor],
-} as ConstructorParameters<typeof LoggerProvider>[0]);
-logs.setGlobalLoggerProvider(loggerProvider);
-const logger = logs.getLogger(SERVICE_NAME, SERVICE_VERSION);
 
-// Configure SDK with fast export for CLI processes
+// Configure SDK with fast export for CLI processes (including logs)
 const sdk = new NodeSDK({
   resource,
   traceExporter,
@@ -71,10 +61,14 @@ const sdk = new NodeSDK({
     exporter: metricExporter,
     exportIntervalMillis: 5000, // Fast export for short-lived CLI
   }),
+  logRecordProcessors: [logRecordProcessor],
 });
 
-// Start SDK
+// Start SDK - this initializes tracing, metrics, and logs providers
 sdk.start();
+
+// Get the logger from the SDK's global logger provider
+const logger = logs.getLogger(SERVICE_NAME, SERVICE_VERSION);
 
 // Get providers
 const tracer: Tracer = trace.getTracer(SERVICE_NAME, SERVICE_VERSION);
@@ -324,12 +318,8 @@ export async function shutdown(): Promise<void> {
   }));
 
   try {
-    // Flush and shutdown all providers
-    await Promise.all([
-      loggerProvider.forceFlush(),
-      loggerProvider.shutdown(),
-      sdk.shutdown(),
-    ]);
+    // SDK shutdown handles all providers (traces, metrics, logs)
+    await sdk.shutdown();
     console.log(JSON.stringify({
       level: "info",
       message: "Telemetry shutdown complete",
