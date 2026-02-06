@@ -5,7 +5,7 @@
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc";
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-grpc";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { logs, SeverityNumber } from "@opentelemetry/api-logs";
@@ -38,13 +38,16 @@ const resource = resourceFromAttributes({
   "pod.name": process.env.POD_NAME || "unknown",
 });
 
-// OTLP endpoint from environment
+// OTLP endpoints from environment
 const OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://localhost:4317";
+// HTTP endpoint for logs (use 4318 for HTTP OTLP)
+const OTLP_HTTP_ENDPOINT = OTLP_ENDPOINT.replace(":4317", ":4318");
 
 // Create exporters with explicit endpoint configuration
 const traceExporter = new OTLPTraceExporter({ url: OTLP_ENDPOINT });
 const metricExporter = new OTLPMetricExporter({ url: OTLP_ENDPOINT });
-const logExporter = new OTLPLogExporter({ url: OTLP_ENDPOINT });
+// Use HTTP exporter for logs (more reliable for short-lived CLI processes)
+const logExporter = new OTLPLogExporter({ url: `${OTLP_HTTP_ENDPOINT}/v1/logs` });
 
 // Configure LoggerProvider for OTLP log export
 // Using SimpleLogRecordProcessor for immediate export (critical for CLI processes)
