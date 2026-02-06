@@ -45,14 +45,18 @@ bun add @opentelemetry/sdk-node \
   @grpc/grpc-js
 ```
 
-**Auto-instrumentation packages (add based on your dependencies):**
+**Auto-instrumentation packages (Bun compatibility):**
 ```bash
-# For ioredis (Redis client)
+# For ioredis (Redis client) - WORKS with Bun
 bun add @opentelemetry/instrumentation-ioredis
-
-# For HTTP clients (covers @octokit/rest, @kubernetes/client-node, fetch)
-bun add @opentelemetry/instrumentation-http
 ```
+
+**WARNING: These do NOT work with Bun:**
+- `@opentelemetry/instrumentation-http` - Patches Node's http module (Bun doesn't use it)
+- `@opentelemetry/instrumentation-fetch` - Browser only
+- `@opentelemetry/instrumentation-undici` - Node's undici (Bun has native fetch)
+
+For HTTP clients in Bun (octokit, fetch), use manual `withSpan()` wrappers.
 
 Available auto-instrumentations: https://github.com/open-telemetry/opentelemetry-js-contrib
 

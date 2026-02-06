@@ -24,8 +24,12 @@ import {
 } from "@opentelemetry/api";
 
 // Auto-instrumentation for libraries
+// NOTE: Only ioredis works with Bun. HTTP/fetch instrumentation doesn't work because:
+// - @opentelemetry/instrumentation-http: Patches Node's http module (Bun doesn't use it)
+// - @opentelemetry/instrumentation-fetch: Browser only
+// - @opentelemetry/instrumentation-undici: Node's undici (Bun has native fetch)
+// For HTTP clients (octokit, k8s), use manual withSpan() wrappers in those modules.
 import { IORedisInstrumentation } from "@opentelemetry/instrumentation-ioredis";
-import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 
 // Service identity from env vars
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || "github-workflow-agents";
@@ -67,17 +71,13 @@ const sdk = new NodeSDK({
     exportIntervalMillis: 5000, // Fast export for short-lived CLI
   }),
   logRecordProcessors: [logRecordProcessor],
-  // Auto-instrumentation for ioredis and HTTP (covers @octokit/rest, @kubernetes/client-node)
+  // Auto-instrumentation (only ioredis works with Bun)
   instrumentations: [
     new IORedisInstrumentation({
       dbStatementSerializer: (cmdName, cmdArgs) => {
         // Include command name and key (first arg) but not values for security
         return cmdArgs.length > 0 ? `${cmdName} ${cmdArgs[0]}` : cmdName;
       },
-    }),
-    new HttpInstrumentation({
-      // Ignore health check endpoints to reduce noise
-      ignoreIncomingRequestHook: (req) => req.url === "/health",
     }),
   ],
 });

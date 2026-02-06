@@ -1,4 +1,5 @@
 import { Octokit } from "@octokit/rest";
+import { withSpan, Metrics } from "./telemetry.js";
 
 let octokit: Octokit | null = null;
 
@@ -24,20 +25,34 @@ export async function getPRDetails(
   base: string;
   state: string;
 }> {
-  const client = getOctokit();
-  const { data } = await client.pulls.get({
-    owner,
-    repo,
-    pull_number: pr,
-  });
+  return withSpan(
+    "github.pulls.get",
+    async (span) => {
+      span.setAttribute("github.owner", owner);
+      span.setAttribute("github.repo", repo);
+      span.setAttribute("github.pr", pr);
+      span.setAttribute("http.method", "GET");
+      span.setAttribute("http.url", `https://api.github.com/repos/${owner}/${repo}/pulls/${pr}`);
 
-  return {
-    title: data.title,
-    body: data.body,
-    head: data.head.ref,
-    base: data.base.ref,
-    state: data.state,
-  };
+      const client = getOctokit();
+      const { data } = await client.pulls.get({
+        owner,
+        repo,
+        pull_number: pr,
+      });
+
+      span.setAttribute("github.pr.state", data.state);
+      Metrics.recordGitHubApiCall("pulls.get", true);
+
+      return {
+        title: data.title,
+        body: data.body,
+        head: data.head.ref,
+        base: data.base.ref,
+        state: data.state,
+      };
+    }
+  );
 }
 
 export async function getPRBranch(
@@ -69,13 +84,27 @@ export async function postPRComment(
   pr: number,
   body: string
 ): Promise<void> {
-  const client = getOctokit();
-  await client.issues.createComment({
-    owner,
-    repo,
-    issue_number: pr,
-    body,
-  });
+  return withSpan(
+    "github.issues.createComment",
+    async (span) => {
+      span.setAttribute("github.owner", owner);
+      span.setAttribute("github.repo", repo);
+      span.setAttribute("github.pr", pr);
+      span.setAttribute("github.comment.length", body.length);
+      span.setAttribute("http.method", "POST");
+      span.setAttribute("http.url", `https://api.github.com/repos/${owner}/${repo}/issues/${pr}/comments`);
+
+      const client = getOctokit();
+      await client.issues.createComment({
+        owner,
+        repo,
+        issue_number: pr,
+        body,
+      });
+
+      Metrics.recordGitHubApiCall("issues.createComment", true);
+    }
+  );
 }
 
 export async function postQuestion(
