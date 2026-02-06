@@ -24,8 +24,19 @@ export function getRedisClient(): Redis {
 
 export async function closeRedis(): Promise<void> {
   if (client) {
-    await client.quit();
-    client = null;
+    try {
+      // Give quit() 2 seconds to complete gracefully
+      await Promise.race([
+        client.quit(),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    } catch {
+      // Ignore quit errors
+    } finally {
+      // Force disconnect if still connected
+      client.disconnect();
+      client = null;
+    }
   }
 }
 
