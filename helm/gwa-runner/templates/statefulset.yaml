@@ -1,0 +1,165 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "gwa.fullname" . }}
+  labels:
+    {{- include "gwa.runnerLabels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "gwa.fullname" . }}
+  replicas: {{ .Values.runner.replicas }}
+  selector:
+    matchLabels:
+      {{- include "gwa.runnerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gwa.runnerSelectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.runner.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+        - name: fix-permissions
+          image: {{ .Values.runner.initImage }}
+          command:
+            - sh
+            - -c
+            - |
+              chown -R 1000:1000 /home/runner/.claude
+              chown -R 1000:1000 /home/runner/worktrees
+              chown -R 1000:1000 /home/runner/repo
+          volumeMounts:
+            - name: claude-session
+              mountPath: /home/runner/.claude
+            - name: worktrees
+              mountPath: /home/runner/worktrees
+            - name: repo
+              mountPath: /home/runner/repo
+      containers:
+        - name: gwa-agent
+          image: {{ include "gwa.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/bash", "/scripts/entrypoint.sh"]
+          resources:
+            {{- toYaml .Values.runner.resources | nindent 12 }}
+          env:
+            # Application config
+            - name: REPO
+              value: {{ include "gwa.fullRepo" . | quote }}
+            - name: REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Secrets
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.claudeOauthTokenKey }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.githubTokenKey }}
+            {{- if .Values.otel.enabled }}
+            # OpenTelemetry Configuration
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .Values.otel.protocol | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ include "gwa.otelServiceName" . | quote }}
+            - name: OTEL_SERVICE_VERSION
+              value: {{ .Values.otel.serviceVersion | quote }}
+            - name: DEPLOYMENT_ENVIRONMENT
+              value: {{ .Values.otel.environment | quote }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ .Values.otel.resourceAttributes | quote }}
+            # Enable all signals
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+            # Fast flush for CLI processes
+            - name: OTEL_BSP_SCHEDULE_DELAY
+              value: {{ .Values.otel.bspScheduleDelay | quote }}
+            - name: OTEL_BSP_MAX_QUEUE_SIZE
+              value: {{ .Values.otel.bspMaxQueueSize | quote }}
+            - name: OTEL_BSP_MAX_EXPORT_BATCH_SIZE
+              value: {{ .Values.otel.bspMaxExportBatchSize | quote }}
+            - name: OTEL_BSP_EXPORT_TIMEOUT
+              value: {{ .Values.otel.bspExportTimeout | quote }}
+            # Sampling
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ .Values.otel.tracesSampler | quote }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ .Values.otel.tracesSamplerArg | quote }}
+            {{- end }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          volumeMounts:
+            - name: claude-session
+              mountPath: /home/runner/.claude
+            - name: worktrees
+              mountPath: /home/runner/worktrees
+            - name: repo
+              mountPath: /home/runner/repo
+            - name: init-script
+              mountPath: /scripts/entrypoint.sh
+              subPath: entrypoint.sh
+              readOnly: true
+      volumes:
+        - name: init-script
+          configMap:
+            name: {{ include "gwa.fullname" . }}-init
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: claude-session
+        labels:
+          {{- include "gwa.labels" . | nindent 10 }}
+          app.kubernetes.io/component: session-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.storage.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.claudeSession.size }}
+    - metadata:
+        name: worktrees
+        labels:
+          {{- include "gwa.labels" . | nindent 10 }}
+          app.kubernetes.io/component: worktree-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.storage.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.worktrees.size }}
+    - metadata:
+        name: repo
+        labels:
+          {{- include "gwa.labels" . | nindent 10 }}
+          app.kubernetes.io/component: repo-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.storage.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.repo.size }}

@@ -1,0 +1,113 @@
+# GitHub Workflow Agents - Helm Values
+# Required: repo.owner and repo.name must be set
+
+repo:
+  # Required: GitHub organization/owner
+  owner: ""
+  # Required: GitHub repository name
+  name: ""
+
+image:
+  registry: ghcr.io
+  repository: jaybrto/github-workflow-agents
+  tag: latest
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: ghcr-secret
+
+# Redis configuration
+redis:
+  host: redis-haproxy.redis-system.svc.cluster.local
+  port: 6379
+
+# OpenTelemetry configuration
+otel:
+  enabled: true
+  endpoint: http://alloy.alloy.svc.cluster.local:4317
+  protocol: grpc
+  serviceName: github-workflow-agents
+  serviceVersion: "1.0.0"
+  environment: production
+  resourceAttributes: deployment.environment=production,service.namespace=gwa,team=platform
+  # Batch span processor settings
+  bspScheduleDelay: "1000"
+  bspMaxQueueSize: "512"
+  bspMaxExportBatchSize: "256"
+  bspExportTimeout: "5000"
+  # Sampling
+  tracesSampler: parentbased_traceidratio
+  tracesSamplerArg: "1.0"
+
+# Storage configuration
+storage:
+  storageClassName: longhorn-claude
+  claudeSession:
+    size: 10Gi
+  worktrees:
+    size: 30Gi
+  repo:
+    size: 10Gi
+
+# Main GWA runner pod resources
+runner:
+  replicas: 1
+  terminationGracePeriodSeconds: 30
+  resources:
+    requests:
+      memory: 4Gi
+      cpu: 1000m
+    limits:
+      memory: 8Gi
+      cpu: 4000m
+  # Init container image for permissions fix
+  initImage: busybox
+
+# Self-hosted GitHub Actions runner
+actionsRunner:
+  enabled: true
+  replicas: 1
+  image: myoung34/github-runner:latest
+  labels: self-hosted,Linux,X64,gwa
+  disableAutoUpdate: true
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 2Gi
+      cpu: 2000m
+  # kubectl init container
+  kubectlImage: bitnami/kubectl:latest
+
+# Cleanup CronJob
+cleanup:
+  enabled: true
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 200m
+
+# Service configuration
+service:
+  type: ClusterIP
+  headless: true
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+
+# Secret reference (must be created separately)
+secrets:
+  name: gwa-secrets
+  claudeOauthTokenKey: claude-oauth-token
+  githubTokenKey: github-token

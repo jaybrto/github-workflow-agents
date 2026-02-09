@@ -1,0 +1,64 @@
+GitHub Workflow Agents (GWA) has been deployed!
+
+Repository: {{ include "gwa.fullRepo" . }}
+Namespace:  {{ .Release.Namespace }}
+
+=== Resources Created ===
+
+StatefulSet: {{ include "gwa.fullname" . }}
+  Pod Name:  {{ include "gwa.podName" . }}
+
+Service:    {{ include "gwa.fullname" . }}
+
+{{- if .Values.actionsRunner.enabled }}
+Actions Runner: {{ include "gwa.fullname" . }}-actions-runner
+  Labels: {{ .Values.actionsRunner.labels }}
+{{- end }}
+
+{{- if .Values.cleanup.enabled }}
+Cleanup CronJob: {{ include "gwa.fullname" . }}-cleanup
+  Schedule: {{ .Values.cleanup.schedule }}
+{{- end }}
+
+=== Required Secrets ===
+
+Ensure the following secret exists in namespace '{{ .Release.Namespace }}':
+
+  Secret Name: {{ .Values.secrets.name }}
+  Required Keys:
+    - {{ .Values.secrets.claudeOauthTokenKey }}: Claude Code OAuth token
+    - {{ .Values.secrets.githubTokenKey }}: GitHub Personal Access Token
+
+Create it with:
+  kubectl create secret generic {{ .Values.secrets.name }} \
+    --namespace {{ .Release.Namespace }} \
+    --from-literal={{ .Values.secrets.claudeOauthTokenKey }}=<your-claude-token> \
+    --from-literal={{ .Values.secrets.githubTokenKey }}=<your-github-token>
+
+=== Workflow Configuration ===
+
+Add this workflow to your target repository (.github/workflows/claude-code.yml):
+
+  env:
+    GWA_POD: {{ include "gwa.podName" . }}
+    GWA_NAMESPACE: {{ .Release.Namespace }}
+
+  jobs:
+    orchestrate:
+      uses: jaybrto/github-workflow-agents/.github/workflows/gwa-orchestrate.yml@main
+      with:
+        pod_name: ${{ "{{" }} env.GWA_POD {{ "}}" }}
+        namespace: ${{ "{{" }} env.GWA_NAMESPACE {{ "}}" }}
+      secrets:
+        KUBECONFIG_DATA: ${{ "{{" }} secrets.GWA_KUBECONFIG {{ "}}" }}
+
+=== Verification ===
+
+Check pod status:
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+View pod logs:
+  kubectl logs -n {{ .Release.Namespace }} {{ include "gwa.podName" . }}
+
+Exec into pod:
+  kubectl exec -n {{ .Release.Namespace }} -it {{ include "gwa.podName" . }} -- bash

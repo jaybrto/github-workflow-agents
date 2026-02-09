@@ -1,0 +1,50 @@
+{{- if .Values.cleanup.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "gwa.fullname" . }}-cleanup
+  labels:
+    {{- include "gwa.cleanupLabels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.cleanup.schedule | quote }}
+  concurrencyPolicy: {{ .Values.cleanup.concurrencyPolicy }}
+  successfulJobsHistoryLimit: {{ .Values.cleanup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.cleanup.failedJobsHistoryLimit }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "gwa.cleanupLabels" . | nindent 8 }}
+    spec:
+      backoffLimit: {{ .Values.cleanup.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.cleanup.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "gwa.cleanupLabels" . | nindent 12 }}
+        spec:
+          serviceAccountName: {{ include "gwa.fullname" . }}-cleanup
+          restartPolicy: OnFailure
+          containers:
+            - name: cleanup
+              image: {{ include "gwa.image" . }}
+              command:
+                - gwa-cleanup
+              args:
+                - "--repo"
+                - {{ include "gwa.fullRepo" . | quote }}
+                - "--pod"
+                - {{ include "gwa.podName" . | quote }}
+              env:
+                - name: REDIS_HOST
+                  value: {{ .Values.redis.host | quote }}
+                - name: REDIS_PORT
+                  value: {{ .Values.redis.port | quote }}
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.secrets.name }}
+                      key: {{ .Values.secrets.githubTokenKey }}
+              resources:
+                {{- toYaml .Values.cleanup.resources | nindent 16 }}
+{{- end }}

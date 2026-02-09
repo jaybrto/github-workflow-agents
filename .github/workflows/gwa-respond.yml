@@ -1,0 +1,58 @@
+---
+# Reusable workflow for GWA question responses
+# Called by target repositories' thin workflows
+name: GWA Respond (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      pod_name:
+        description: 'Name of the GWA runner pod (e.g., gwa-jaybrto-my-app-0)'
+        required: true
+        type: string
+      namespace:
+        description: 'Kubernetes namespace where the pod runs'
+        required: false
+        type: string
+        default: 'default'
+      pr_number:
+        description: 'PR number'
+        required: true
+        type: string
+      comment:
+        description: 'Comment body containing the response'
+        required: true
+        type: string
+      actor:
+        description: 'GitHub actor who responded'
+        required: false
+        type: string
+    secrets:
+      KUBECONFIG_DATA:
+        description: 'Base64-encoded kubeconfig for cluster access'
+        required: true
+
+jobs:
+  handle-response:
+    runs-on: self-hosted
+    steps:
+      - name: Setup kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_DATA }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Run GWA responder
+        env:
+          POD: ${{ inputs.pod_name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          PR: ${{ inputs.pr_number }}
+          COMMENT: ${{ inputs.comment }}
+          ACTOR: ${{ inputs.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          kubectl exec -n "$NAMESPACE" "$POD" -- gwa-respond \
+            --pr "$PR" \
+            --repo "$REPO" \
+            --comment "$COMMENT" \
+            --actor "${ACTOR:-}"

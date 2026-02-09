@@ -1,0 +1,43 @@
+{{- if .Values.actionsRunner.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "gwa.fullname" . }}-actions-runner
+  labels:
+    {{- include "gwa.actionsRunnerLabels" . | nindent 4 }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gwa.fullname" . }}-actions-runner
+  labels:
+    {{- include "gwa.actionsRunnerLabels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gwa.fullname" . }}-actions-runner
+  labels:
+    {{- include "gwa.actionsRunnerLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gwa.fullname" . }}-actions-runner
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gwa.fullname" . }}-actions-runner
+    namespace: {{ .Release.Namespace }}
+{{- end }}

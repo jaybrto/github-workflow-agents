@@ -1,0 +1,38 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "gwa.fullname" . }}-cleanup
+  labels:
+    {{- include "gwa.cleanupLabels" . | nindent 4 }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gwa.fullname" . }}-cleanup
+  labels:
+    {{- include "gwa.cleanupLabels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gwa.fullname" . }}-cleanup
+  labels:
+    {{- include "gwa.cleanupLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gwa.fullname" . }}-cleanup
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gwa.fullname" . }}-cleanup
+    namespace: {{ .Release.Namespace }}

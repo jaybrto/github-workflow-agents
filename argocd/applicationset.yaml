@@ -1,0 +1,55 @@
+---
+# ArgoCD ApplicationSet for GWA Multi-Repo Deployment
+# Add new repos to the 'elements' list via onboard-repo.sh
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: gwa-runners
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: github-workflow-agents
+spec:
+  generators:
+    - list:
+        elements:
+          # Initial entry for this repository
+          - repoOwner: jaybrto
+            repoName: github-workflow-agents
+          # Add more repos here:
+          # - repoOwner: jaybrto
+          #   repoName: my-other-repo
+  template:
+    metadata:
+      name: 'gwa-{{repoOwner}}-{{repoName}}'
+      labels:
+        app.kubernetes.io/part-of: github-workflow-agents
+        gwa.io/repo-owner: '{{repoOwner}}'
+        gwa.io/repo-name: '{{repoName}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/jaybrto/github-workflow-agents.git
+        targetRevision: HEAD
+        path: helm/gwa-runner
+        helm:
+          parameters:
+            - name: repo.owner
+              value: '{{repoOwner}}'
+            - name: repo.name
+              value: '{{repoName}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: 'gwa-{{repoOwner}}-{{repoName}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m

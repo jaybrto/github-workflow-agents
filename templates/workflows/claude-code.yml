@@ -1,0 +1,58 @@
+---
+# GWA Claude Code - Thin Caller Workflow
+# This workflow is copied to target repositories by onboard-repo.sh
+# It calls the reusable workflows in jaybrto/github-workflow-agents
+name: GWA Claude Code
+
+"on":
+  pull_request:
+    types: [opened, reopened, synchronize]
+  issue_comment:
+    types: [created, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to work on
+        required: true
+
+env:
+  # These are set by onboard-repo.sh
+  GWA_POD: __GWA_POD__
+  GWA_NAMESPACE: __GWA_NAMESPACE__
+
+jobs:
+  # Determine context and call orchestrator for PR events and @claude comments
+  orchestrate:
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '@claude'))
+    uses: jaybrto/github-workflow-agents/.github/workflows/gwa-orchestrate.yml@main
+    with:
+      pod_name: ${{ vars.GWA_POD || 'gwa-jaybrto-github-workflow-agents-0' }}
+      namespace: ${{ vars.GWA_NAMESPACE || 'gwa-jaybrto-github-workflow-agents' }}
+      pr_number: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pr_number }}
+      trigger: ${{ github.event_name == 'pull_request' && 'pr_event' || github.event_name == 'issue_comment' && 'comment' || 'manual' }}
+      branch: ${{ github.head_ref || '' }}
+      comment: ${{ github.event.comment.body || '' }}
+      actor: ${{ github.actor }}
+    secrets:
+      KUBECONFIG_DATA: ${{ secrets.GWA_KUBECONFIG }}
+
+  # Handle @claude-answer: responses
+  respond:
+    if: >
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@claude-answer:')
+    uses: jaybrto/github-workflow-agents/.github/workflows/gwa-respond.yml@main
+    with:
+      pod_name: ${{ vars.GWA_POD || 'gwa-jaybrto-github-workflow-agents-0' }}
+      namespace: ${{ vars.GWA_NAMESPACE || 'gwa-jaybrto-github-workflow-agents' }}
+      pr_number: ${{ github.event.issue.number }}
+      comment: ${{ github.event.comment.body }}
+      actor: ${{ github.actor }}
+    secrets:
+      KUBECONFIG_DATA: ${{ secrets.GWA_KUBECONFIG }}

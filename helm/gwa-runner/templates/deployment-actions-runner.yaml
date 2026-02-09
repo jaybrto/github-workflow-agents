@@ -1,0 +1,65 @@
+{{- if .Values.actionsRunner.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gwa.fullname" . }}-actions-runner
+  labels:
+    {{- include "gwa.actionsRunnerLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.actionsRunner.replicas }}
+  selector:
+    matchLabels:
+      {{- include "gwa.actionsRunnerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gwa.actionsRunnerSelectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "gwa.fullname" . }}-actions-runner
+      initContainers:
+        - name: install-kubectl
+          image: {{ .Values.actionsRunner.kubectlImage }}
+          command:
+            - sh
+            - -c
+            - |
+              cp /opt/bitnami/kubectl/bin/kubectl /tools/kubectl
+              chmod +x /tools/kubectl
+          volumeMounts:
+            - name: tools
+              mountPath: /tools
+      containers:
+        - name: runner
+          image: {{ .Values.actionsRunner.image }}
+          env:
+            - name: RUNNER_NAME_PREFIX
+              value: {{ include "gwa.fullname" . }}
+            - name: RUNNER_WORKDIR
+              value: /tmp/runner/work
+            - name: REPO_URL
+              value: {{ include "gwa.repoUrl" . | quote }}
+            - name: ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.githubTokenKey }}
+            - name: LABELS
+              value: {{ .Values.actionsRunner.labels | quote }}
+            - name: DISABLE_AUTO_UPDATE
+              value: {{ .Values.actionsRunner.disableAutoUpdate | quote }}
+            - name: PATH
+              value: /tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          resources:
+            {{- toYaml .Values.actionsRunner.resources | nindent 12 }}
+          volumeMounts:
+            - name: work
+              mountPath: /tmp/runner/work
+            - name: tools
+              mountPath: /tools
+      volumes:
+        - name: work
+          emptyDir: {}
+        - name: tools
+          emptyDir: {}
+{{- end }}

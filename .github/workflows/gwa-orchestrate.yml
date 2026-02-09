@@ -1,0 +1,72 @@
+---
+# Reusable workflow for GWA orchestration
+# Called by target repositories' thin workflows
+name: GWA Orchestrate (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      pod_name:
+        description: 'Name of the GWA runner pod (e.g., gwa-jaybrto-my-app-0)'
+        required: true
+        type: string
+      namespace:
+        description: 'Kubernetes namespace where the pod runs'
+        required: false
+        type: string
+        default: 'default'
+      pr_number:
+        description: 'PR number (for workflow_dispatch)'
+        required: false
+        type: string
+      trigger:
+        description: 'Trigger type: pr_event, comment, or manual'
+        required: false
+        type: string
+        default: 'pr_event'
+      branch:
+        description: 'Branch name (for PR events)'
+        required: false
+        type: string
+      comment:
+        description: 'Comment body (for comment triggers)'
+        required: false
+        type: string
+      actor:
+        description: 'GitHub actor who triggered the workflow'
+        required: false
+        type: string
+    secrets:
+      KUBECONFIG_DATA:
+        description: 'Base64-encoded kubeconfig for cluster access'
+        required: true
+
+jobs:
+  claude-work:
+    runs-on: self-hosted
+    timeout-minutes: 1440
+    steps:
+      - name: Setup kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_DATA }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Run GWA orchestrator
+        env:
+          POD: ${{ inputs.pod_name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          PR: ${{ inputs.pr_number }}
+          TRIGGER: ${{ inputs.trigger }}
+          BRANCH: ${{ inputs.branch }}
+          COMMENT: ${{ inputs.comment }}
+          ACTOR: ${{ inputs.actor }}
+          REPO: ${{ github.repository }}
+        run: |
+          kubectl exec -n "$NAMESPACE" "$POD" -- gwa-orchestrate \
+            --pr "$PR" \
+            --repo "$REPO" \
+            --trigger "$TRIGGER" \
+            --branch "${BRANCH:-}" \
+            --comment "${COMMENT:-}" \
+            --actor "${ACTOR:-}"

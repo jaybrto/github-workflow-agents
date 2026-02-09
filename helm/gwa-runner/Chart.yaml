@@ -1,0 +1,16 @@
+apiVersion: v2
+name: gwa-runner
+description: GitHub Workflow Agents - Claude Code automation for GitHub PRs
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - github
+  - claude
+  - automation
+  - ci-cd
+maintainers:
+  - name: jaybrto
+    url: https://github.com/jaybrto
+sources:
+  - https://github.com/jaybrto/github-workflow-agents
