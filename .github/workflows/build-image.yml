@@ -8,46 +8,91 @@ name: Build Container Image
       - "src/**"
       - "package.json"
       - "Dockerfile"
-      - ".github/workflows/build-image.yml"
+      - "schema.sql"
+      - "bun.lockb"
   workflow_dispatch:
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE: ghcr.io/jaybrto/github-workflow-agents
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
+    runs-on: self-hosted
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
+      - name: Get metadata
         id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=
-            type=raw,value={{date 'YYYYMMDD-HHmmss'}}
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64
+      - name: Build with Kaniko
+        run: |
+          # Create Kaniko pod to build and push
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: kaniko-${{ github.run_id }}
+            namespace: default
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: kaniko
+                image: gcr.io/kaniko-project/executor:latest
+                args:
+                  - "--dockerfile=Dockerfile"
+                  - "--context=git://github.com/${{ github.repository }}.git#refs/heads/${{ github.ref_name }}"
+                  - "--destination=${{ env.IMAGE }}:latest"
+                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }}"
+                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
+                  - "--cache=true"
+                  - "--cache-repo=${{ env.IMAGE }}/cache"
+                volumeMounts:
+                  - name: docker-config
+                    mountPath: /kaniko/.docker
+            volumes:
+              - name: docker-config
+                secret:
+                  secretName: ghcr-push-secret
+                  items:
+                    - key: .dockerconfigjson
+                      path: config.json
+          EOF
+
+      - name: Wait for build
+        run: |
+          echo "Waiting for Kaniko build..."
+          # Wait for pod to start
+          kubectl wait --for=condition=Ready pod/kaniko-${{ github.run_id }} --timeout=120s 2>/dev/null || true
+          # Wait for completion (Succeeded or Failed)
+          while true; do
+            STATUS=$(kubectl get pod kaniko-${{ github.run_id }} -o jsonpath='{.status.phase}')
+            echo "Build status: $STATUS"
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "Build completed successfully!"
+              break
+            elif [ "$STATUS" = "Failed" ]; then
+              echo "Build failed!"
+              kubectl logs kaniko-${{ github.run_id }}
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Show build logs
+        if: always()
+        run: kubectl logs kaniko-${{ github.run_id }} 2>/dev/null || true
+
+      - name: Cleanup
+        if: always()
+        run: kubectl delete pod kaniko-${{ github.run_id }} --ignore-not-found
+
+      - name: Restart runner pod
+        if: success()
+        run: |
+          echo "Restarting gwa-runner to pick up new image..."
+          kubectl rollout restart statefulset/gwa-runner
+          kubectl rollout status statefulset/gwa-runner --timeout=300s
