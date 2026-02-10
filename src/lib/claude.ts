@@ -107,15 +107,36 @@ async function runClaudeInternal(options: ClaudeOptions): Promise<ClaudeResult> 
     args.push("--continue");
   }
 
+  // SECURITY: Whitelist only required environment variables instead of passing all
+  // This prevents accidental leakage of sensitive env vars to subprocess
+  const safeEnv: Record<string, string | undefined> = {
+    // Required for Claude operation
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    USER: process.env.USER,
+    SHELL: process.env.SHELL,
+    TERM: process.env.TERM || "xterm-256color",
+    // Claude authentication (required)
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    // Git operations
+    GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME,
+    GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL,
+    GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME,
+    GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL,
+    // Node/Bun runtime
+    NODE_ENV: process.env.NODE_ENV,
+    // Telemetry (if configured)
+    OTEL_EXPORTER_OTLP_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+    // Headless mode indicator
+    CI: "true",
+  };
+
   const proc = Bun.spawn(["claude", ...args], {
     cwd: workingDir,
     stdout: "pipe",
     stderr: "pipe",
-    env: {
-      ...process.env,
-      // Ensure Claude doesn't try to use interactive features
-      CI: "true",
-    },
+    env: safeEnv,
   });
 
   const outputChunks: string[] = [];

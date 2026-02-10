@@ -50,6 +50,35 @@ async function main() {
     process.exit(1);
   }
 
+  // SECURITY: Input validation to prevent injection attacks
+  const repoRegex = /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+$/;
+  if (!repoRegex.test(args.repo)) {
+    console.error("Error: Invalid repo format. Expected 'owner/repo'");
+    await shutdownTelemetry();
+    process.exit(1);
+  }
+
+  if (args.pr <= 0 || args.pr > 999999999) {
+    console.error("Error: Invalid PR number");
+    await shutdownTelemetry();
+    process.exit(1);
+  }
+
+  // Validate actor format (GitHub usernames: alphanumeric, hyphens, max 39 chars)
+  if (args.actor && !/^[a-zA-Z0-9-]{1,39}$/.test(args.actor) && args.actor !== "unknown") {
+    console.error("Error: Invalid actor format");
+    await shutdownTelemetry();
+    process.exit(1);
+  }
+
+  // Limit comment size to prevent DoS
+  const MAX_COMMENT_SIZE = 65536; // 64KB
+  if (args.comment && args.comment.length > MAX_COMMENT_SIZE) {
+    console.error(`Error: Comment too large (max ${MAX_COMMENT_SIZE} bytes)`);
+    await shutdownTelemetry();
+    process.exit(1);
+  }
+
   const [owner, repoName] = args.repo.split("/");
   const ctx: PRContext = {
     ...args,

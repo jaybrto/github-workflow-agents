@@ -445,8 +445,16 @@ export async function startWorker(
     session.activeTasks.push(config.taskId);
 
     // Start Claude REPL in worker window
-    const claudeCommand = `claude --dangerously-skip-permissions -p "${prompt.replace(/"/g, '\\"')}"`;
-    await sendToWorker(window, claudeCommand);
+    // SECURITY: Write prompt to temp file to avoid shell injection via user-controlled content
+    const promptFile = `/tmp/gwa-worker-prompt-${config.taskId}-${Date.now()}.md`;
+    await Bun.write(promptFile, prompt);
+
+    // Start Claude with prompt file reference instead of inline content
+    await sendToWorker(window, "claude --dangerously-skip-permissions");
+    // Wait for REPL to initialize
+    await Bun.sleep(2000);
+    // Send command to read the prompt file
+    await sendToWorker(window, `Read ${promptFile} and follow the instructions.`);
 
     log("info", "Worker started", { taskId: config.taskId, window });
   });

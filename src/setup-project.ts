@@ -13,9 +13,37 @@
 
 import { parseArgs } from "util";
 import { readFileSync } from "fs";
+import { resolve, normalize } from "path";
 import { withSpan, Metrics, shutdown as shutdownTelemetry, log } from "./lib/telemetry.js";
 import { getOctokit } from "./lib/github.js";
 import { logActivity } from "./lib/db.js";
+
+// SECURITY: Allowed directories for template files
+const ALLOWED_TEMPLATE_DIRS = [
+  "/home/runner/.claude/templates",
+  "/home/runner/repo/templates",
+];
+
+/**
+ * Validate template path to prevent path traversal attacks.
+ * Only allows templates from approved directories.
+ */
+function validateTemplatePath(templatePath: string): string {
+  const resolved = resolve(normalize(templatePath));
+
+  // Check if the resolved path starts with any allowed directory
+  const isAllowed = ALLOWED_TEMPLATE_DIRS.some((allowedDir) =>
+    resolved.startsWith(resolve(allowedDir))
+  );
+
+  if (!isAllowed) {
+    throw new Error(
+      `Invalid template path: ${templatePath}. Templates must be in: ${ALLOWED_TEMPLATE_DIRS.join(" or ")}`
+    );
+  }
+
+  return resolved;
+}
 
 interface SetupArgs {
   org: string;
@@ -228,13 +256,20 @@ async function setupProject(args: SetupArgs): Promise<{ id: string; number: numb
   return withSpan("setup-project.execute", async (span) => {
     const octokit = getOctokit();
 
-    // Load template
+    // Load template with path validation
     let template: ProjectTemplate;
     try {
-      const templateContent = readFileSync(args.templatePath!, "utf-8");
+      // SECURITY: Validate template path to prevent path traversal
+      const validatedPath = validateTemplatePath(args.templatePath!);
+      const templateContent = readFileSync(validatedPath, "utf-8");
       template = JSON.parse(templateContent);
     } catch (error) {
-      // Use default template if file not found
+      // Use default template if file not found or path invalid
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      if (errorMsg.includes("Invalid template path")) {
+        log("error", "Template path validation failed", { error: errorMsg });
+        throw error; // Re-throw security errors
+      }
       log("warn", "Template file not found, using defaults");
       template = getDefaultTemplate(args.repo);
     }

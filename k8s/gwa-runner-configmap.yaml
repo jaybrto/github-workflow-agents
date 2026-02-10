@@ -17,11 +17,24 @@ data:
     DB_PATH="${DB_PATH:-/home/runner/.claude/gwa.db}"
     SCHEMA_PATH="${SCHEMA_PATH:-/home/runner/.claude/schema.sql}"
 
+    # SECURITY: Validate REPO format to prevent injection attacks
+    # Must be in format: owner/repo with alphanumeric, hyphens, underscores, dots
+    if [[ ! "${REPO}" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+      echo "[GWA] ERROR: Invalid REPO format. Expected 'owner/repo', got: ${REPO}"
+      exit 1
+    fi
+
+    # SECURITY: Validate POD_NAME format (alphanumeric and hyphens only)
+    if [[ ! "${POD_NAME}" =~ ^[a-zA-Z0-9-]+$ ]]; then
+      echo "[GWA] ERROR: Invalid POD_NAME format: ${POD_NAME}"
+      exit 1
+    fi
+
     echo "[GWA] Starting long-lived pod for repo: ${REPO}"
 
-    # Mark directories as safe for git
+    # SECURITY: Mark only specific directories as safe for git (no wildcard)
     git config --global --add safe.directory /home/runner/repo
-    git config --global --add safe.directory '*'
+    git config --global --add safe.directory /home/runner/worktrees
 
     # GitHub CLI uses GITHUB_TOKEN env var automatically
     # Just configure git to use gh for auth
@@ -66,8 +79,12 @@ data:
     fi
 
     # Register pod info in SQLite config
-    sqlite3 "${DB_PATH}" "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('pod_name', '${POD_NAME}', unixepoch())"
-    sqlite3 "${DB_PATH}" "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('repo', '${REPO}', unixepoch())"
+    # SECURITY: Use parameterized approach via printf to prevent SQL injection
+    # Values are already validated above, but we still escape single quotes for defense in depth
+    SAFE_POD_NAME="${POD_NAME//\'/\'\'}"
+    SAFE_REPO="${REPO//\'/\'\'}"
+    sqlite3 "${DB_PATH}" "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('pod_name', '${SAFE_POD_NAME}', unixepoch())"
+    sqlite3 "${DB_PATH}" "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('repo', '${SAFE_REPO}', unixepoch())"
 
     # Initialize tmux session if not running
     if ! tmux has-session -t gwa-work 2>/dev/null; then
