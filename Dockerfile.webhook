@@ -1,0 +1,30 @@
+# Dockerfile for GWA Webhook Handler
+FROM oven/bun:latest AS builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json bun.lock* ./
+
+# Install dependencies
+RUN bun install --frozen-lockfile
+
+# Copy source
+COPY src/webhook ./src/webhook
+
+# Build standalone binary
+RUN bun build src/webhook/handler.ts --compile --outfile dist/gwa-webhook
+
+# Runtime stage
+FROM gcr.io/distroless/base-debian12
+
+WORKDIR /app
+
+# Copy the compiled binary
+COPY --from=builder /app/dist/gwa-webhook /app/gwa-webhook
+
+# Expose the webhook port
+EXPOSE 3000
+
+# Run the webhook
+ENTRYPOINT ["/app/gwa-webhook"]

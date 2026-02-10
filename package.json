@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "bun run build:orchestrate && bun run build:respond && bun run build:cleanup && bun run build:debug-redis && bun run build:health-check && bun run build:ask-question && bun run build:session-complete && bun run build:architect && bun run build:worker && bun run build:setup-project && bun run build:start-planning && bun run build:inject-prompt && bun run build:run-playwright && bun run build:resume-with-failures && bun run build:send-answer && bun run build:deploy-and-cleanup",
+    "build": "bun run build:orchestrate && bun run build:respond && bun run build:cleanup && bun run build:debug-redis && bun run build:health-check && bun run build:ask-question && bun run build:session-complete && bun run build:architect && bun run build:worker && bun run build:setup-project && bun run build:start-planning && bun run build:inject-prompt && bun run build:run-playwright && bun run build:resume-with-failures && bun run build:send-answer && bun run build:deploy-and-cleanup && bun run build:webhook",
     "build:orchestrate": "bun build src/orchestrate.ts --compile --outfile dist/gwa-orchestrate",
     "build:respond": "bun build src/respond.ts --compile --outfile dist/gwa-respond",
     "build:cleanup": "bun build src/cleanup.ts --compile --outfile dist/gwa-cleanup",
@@ -21,6 +21,8 @@
     "build:resume-with-failures": "bun build src/transitions/resume-with-failures.ts --compile --outfile dist/gwa-resume-with-failures",
     "build:send-answer": "bun build src/transitions/send-answer.ts --compile --outfile dist/gwa-send-answer",
     "build:deploy-and-cleanup": "bun build src/transitions/deploy-and-cleanup.ts --compile --outfile dist/gwa-deploy-and-cleanup",
+    "build:webhook": "bun build src/webhook/handler.ts --compile --outfile dist/gwa-webhook",
+    "webhook": "bun run src/webhook/handler.ts",
     "test": "bun test"
   },
   "dependencies": {
