@@ -275,3 +275,30 @@ CREATE TABLE IF NOT EXISTS conversation_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversation_session ON conversation_history(session_id, sequence_num);
+
+-- ============================================
+-- AGENT_TASKS: Swarm worker task tracking
+-- ============================================
+CREATE TABLE IF NOT EXISTS agent_tasks (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    agent_type TEXT NOT NULL,             -- "architect" | "worker"
+    task_id TEXT NOT NULL,                -- From plan (e.g., "task-001")
+    name TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+                                          -- "pending" | "in_progress" | "completed" | "failed" | "blocked"
+    tmux_window INTEGER,
+    skills TEXT,                          -- JSON array of skills
+    scope TEXT,                           -- JSON: {files: string[], description: string}
+    dependencies TEXT,                    -- JSON: {blockedBy: string[], blocks: string[]}
+    validation TEXT,                      -- JSON array of validation criteria
+    progress INTEGER DEFAULT 0,           -- 0-100
+    result TEXT,                          -- JSON: {success, filesCreated, filesModified, summary, error?}
+    created_at INTEGER DEFAULT (unixepoch()),
+    started_at INTEGER,
+    completed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_session ON agent_tasks(session_id);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status);

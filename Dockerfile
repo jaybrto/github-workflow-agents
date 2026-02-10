@@ -20,7 +20,13 @@ RUN mkdir -p dist && \
     bun build src/session-complete.ts --compile --outfile dist/gwa-session-complete && \
     bun build src/architect.ts --compile --outfile dist/gwa-architect && \
     bun build src/worker.ts --compile --outfile dist/gwa-worker && \
-    bun build src/setup-project.ts --compile --outfile dist/gwa-setup-project
+    bun build src/setup-project.ts --compile --outfile dist/gwa-setup-project && \
+    bun build src/transitions/start-planning.ts --compile --outfile dist/gwa-start-planning && \
+    bun build src/transitions/inject-prompt.ts --compile --outfile dist/gwa-inject-prompt && \
+    bun build src/transitions/run-playwright.ts --compile --outfile dist/gwa-run-playwright && \
+    bun build src/transitions/resume-with-failures.ts --compile --outfile dist/gwa-resume-with-failures && \
+    bun build src/transitions/send-answer.ts --compile --outfile dist/gwa-send-answer && \
+    bun build src/transitions/deploy-and-cleanup.ts --compile --outfile dist/gwa-deploy-and-cleanup
 
 # Stage 2: Runtime image with Node.js (for Claude Code) + compiled Bun tools
 FROM node:22-bookworm-slim
@@ -65,6 +71,12 @@ COPY --from=builder /build/dist/gwa-session-complete /usr/local/bin/
 COPY --from=builder /build/dist/gwa-architect /usr/local/bin/
 COPY --from=builder /build/dist/gwa-worker /usr/local/bin/
 COPY --from=builder /build/dist/gwa-setup-project /usr/local/bin/
+COPY --from=builder /build/dist/gwa-start-planning /usr/local/bin/
+COPY --from=builder /build/dist/gwa-inject-prompt /usr/local/bin/
+COPY --from=builder /build/dist/gwa-run-playwright /usr/local/bin/
+COPY --from=builder /build/dist/gwa-resume-with-failures /usr/local/bin/
+COPY --from=builder /build/dist/gwa-send-answer /usr/local/bin/
+COPY --from=builder /build/dist/gwa-deploy-and-cleanup /usr/local/bin/
 RUN chmod +x /usr/local/bin/gwa-*
 
 # Copy SQLite schema
