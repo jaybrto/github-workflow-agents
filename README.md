@@ -35,14 +35,75 @@ GWA transforms GitHub issues into completed, tested pull requests using Claude C
 
 ### Column Transition Automation
 
-| Transition | Trigger | Action |
-|------------|---------|--------|
-| Todo → Planning | Issue added to board | Create session, start planning REPL |
-| Planning → In Progress | Plan approved | Inject implementation prompt |
-| In Progress → QA | Code complete | Run Playwright e2e tests |
-| QA → In Progress | Tests fail | Resume REPL with failure context |
-| Blocked → Previous | Answer received | Send answer to blocked REPL |
-| Review → Done | Review approved | Merge PR, cleanup session |
+GWA handles all possible project board column transitions via webhook. When an item moves between columns, the webhook triggers the appropriate handler.
+
+#### State Machine
+
+```
+                                    ┌─────────────────────────────────────┐
+                                    │            BLOCKED                   │
+                                    │         (awaiting input)             │
+                                    └───────────────┬─────────────────────┘
+                                          ▲         │ send-answer
+                      pause-for-question  │         ▼
+┌──────────┐  start-   ┌──────────┐  inject-  ┌───────────┐  run-      ┌──────┐
+│   TODO   │──planning─▶│ PLANNING │──prompt──▶│IN PROGRESS│──playwright▶│  QA  │
+└──────────┘           └──────────┘           └───────────┘            └──────┘
+     ▲                       ▲                      ▲                      │
+     │ cancel-session        │ request-replanning  │ resume-with-failures │
+     └───────────────────────┴─────────────────────┴──────────────────────┘
+                                                                           │
+                                    ┌──────────────────────────────────────┘
+                                    │ status-update
+                                    ▼
+                              ┌──────────┐  deploy-and-  ┌──────────┐
+                              │  REVIEW  │───cleanup────▶│   DONE   │
+                              └──────────┘               └──────────┘
+                                    │                          │
+                                    │ request-retest           │ reopen-issue
+                                    ▼                          ▼
+                                  (QA)                    (any column)
+```
+
+#### Handler Reference
+
+| Handler | Transition(s) | Action |
+|---------|---------------|--------|
+| **Forward Flow** |||
+| `start-planning` | Todo → Planning | Create session, spawn architect for planning |
+| `inject-prompt` | Planning → In Progress | Plan approved, start implementation |
+| `run-playwright` | In Progress → QA | Run Playwright e2e tests |
+| `status-update` | QA → Review | Tests passed, notify for review |
+| `deploy-and-cleanup` | Review → Done | Merge PR, deploy, cleanup session |
+| **Blocked Handling** |||
+| `pause-for-question` | Any → Blocked | Pause session, await human input |
+| `send-answer` | Blocked → Planning/In Progress/QA/Review | Resume session with answer |
+| **Iteration** |||
+| `resume-with-failures` | QA → In Progress | Resume with test failure context |
+| `request-retest` | Review → QA | Re-run tests after review feedback |
+| **Backward Transitions** |||
+| `request-replanning` | In Progress/QA/Review → Planning | Return to planning phase |
+| `resume-implementation` | Review → In Progress | Resume implementation work |
+| `cancel-session` | Any → Todo | Cancel and cleanup current session |
+| **Reopening** |||
+| `reopen-issue` | Done → Any | Create new session for reopened issue |
+| **Direct Jumps** |||
+| `quick-start` | Todo → In Progress | Skip planning, start immediately |
+| `close-without-work` | Any → Done | Close as won't-fix/duplicate |
+| `skip-qa` | In Progress → Review | Skip tests, go to review |
+| `skip-implementation` | Planning → QA | Pre-built solution, skip to QA |
+
+#### Complete Transition Matrix
+
+| From ↓ / To → | Todo | Planning | In Progress | QA | Blocked | Review | Done |
+|---------------|------|----------|-------------|----|---------|---------|----|
+| **Todo** | - | start-planning | quick-start | - | pause-for-question | - | close-without-work |
+| **Planning** | cancel-session | - | inject-prompt | skip-implementation | pause-for-question | - | close-without-work |
+| **In Progress** | cancel-session | request-replanning | - | run-playwright | pause-for-question | skip-qa | close-without-work |
+| **QA** | cancel-session | request-replanning | resume-with-failures | - | pause-for-question | status-update | close-without-work |
+| **Blocked** | cancel-session | send-answer | send-answer | send-answer | - | send-answer | - |
+| **Review** | cancel-session | request-replanning | resume-implementation | request-retest | pause-for-question | - | deploy-and-cleanup |
+| **Done** | reopen-issue | reopen-issue | reopen-issue | reopen-issue | reopen-issue | reopen-issue | - |
 
 ### Security Features
 - Input validation on all CLI parameters

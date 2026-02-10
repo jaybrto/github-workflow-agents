@@ -116,59 +116,174 @@ jobs:
           echo "  Issue: ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           echo "  Title: ${{ github.event.inputs.issue_title }}"
 
-      - name: Handle Planning transition
-        if: github.event.inputs.to_column == 'Planning'
+      # ═══════════════════════════════════════════════════════════════════
+      # FORWARD FLOW HANDLERS
+      # ═══════════════════════════════════════════════════════════════════
+
+      - name: "Handler: start-planning"
+        if: github.event.inputs.handler == 'start-planning'
         run: |
           echo "Starting planning phase for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
-
-          # Planning: Create session, spawn architect agent
+          # Create session, spawn architect agent for planning
           kubectl exec "$POD" -- gwa-architect \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --phase planning
 
-      - name: Handle In Progress transition
-        if: github.event.inputs.to_column == 'In Progress'
+      - name: "Handler: inject-prompt"
+        if: github.event.inputs.handler == 'inject-prompt'
         run: |
           echo "Starting implementation for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
-
-          # In Progress: Plan approved, spawn workers
+          # Plan approved, spawn worker agents for implementation
           kubectl exec "$POD" -- gwa-architect \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --phase implementation
 
-      - name: Handle QA transition
-        if: github.event.inputs.to_column == 'QA'
+      - name: "Handler: run-playwright"
+        if: github.event.inputs.handler == 'run-playwright'
         run: |
-          echo "Starting QA for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          echo "Running QA tests for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Run Playwright e2e tests
+          echo "TODO: Trigger Playwright test suite"
 
-          # QA: Run Playwright e2e tests
-          # For now, just log - full implementation would trigger test suite
-          echo "Would trigger Playwright e2e tests here"
-
-      - name: Handle Review transition
-        if: github.event.inputs.to_column == 'Review'
+      - name: "Handler: status-update"
+        if: github.event.inputs.handler == 'status-update'
         run: |
-          echo "Ready for human review: ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          echo "Ready for review: ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Post summary comment, notify reviewers
+          echo "TODO: Post review summary comment"
 
-          # Review: Pause session, notify for human review
-          # Full implementation would post summary comment
-
-      - name: Handle Done transition
-        if: github.event.inputs.to_column == 'Done'
+      - name: "Handler: deploy-and-cleanup"
+        if: github.event.inputs.handler == 'deploy-and-cleanup'
         run: |
-          echo "Completing ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
-
-          # Done: Destroy session, cleanup resources
+          echo "Deploying and cleaning up ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Merge PR, deploy, destroy session
           kubectl exec "$POD" -- gwa-cleanup \
             --session "issue-${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}"
 
-      - name: Handle Blocked transition
-        if: github.event.inputs.to_column == 'Blocked'
-        run: |
-          echo "${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }} is blocked"
+      # ═══════════════════════════════════════════════════════════════════
+      # BLOCKED STATE HANDLERS
+      # ═══════════════════════════════════════════════════════════════════
 
-          # Blocked: Pause session, await unblock
-          # Full implementation would update project item with blocked reason
+      - name: "Handler: pause-for-question"
+        if: github.event.inputs.handler == 'pause-for-question'
+        run: |
+          echo "Pausing session for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }} - awaiting input"
+          # Pause session, post question comment
+          echo "TODO: Pause session and await human input"
+
+      - name: "Handler: send-answer"
+        if: github.event.inputs.handler == 'send-answer'
+        run: |
+          echo "Resuming ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }} with answer"
+          # Resume session with the answer from blocked state
+          kubectl exec "$POD" -- gwa-respond \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}"
+
+      # ═══════════════════════════════════════════════════════════════════
+      # ITERATION HANDLERS
+      # ═══════════════════════════════════════════════════════════════════
+
+      - name: "Handler: resume-with-failures"
+        if: github.event.inputs.handler == 'resume-with-failures'
+        run: |
+          echo "Resuming implementation with test failures for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Resume session with test failure context
+          kubectl exec "$POD" -- gwa-architect \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --phase fix-failures
+
+      - name: "Handler: request-retest"
+        if: github.event.inputs.handler == 'request-retest'
+        run: |
+          echo "Re-running tests for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Re-run test suite after review feedback
+          echo "TODO: Re-trigger Playwright tests"
+
+      # ═══════════════════════════════════════════════════════════════════
+      # BACKWARD TRANSITION HANDLERS
+      # ═══════════════════════════════════════════════════════════════════
+
+      - name: "Handler: request-replanning"
+        if: github.event.inputs.handler == 'request-replanning'
+        run: |
+          echo "Returning to planning for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Reset session to planning phase
+          kubectl exec "$POD" -- gwa-architect \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --phase replanning
+
+      - name: "Handler: resume-implementation"
+        if: github.event.inputs.handler == 'resume-implementation'
+        run: |
+          echo "Resuming implementation for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Resume existing session for more implementation work
+          kubectl exec "$POD" -- gwa-architect \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --phase resume
+
+      - name: "Handler: cancel-session"
+        if: github.event.inputs.handler == 'cancel-session'
+        run: |
+          echo "Cancelling session for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Cancel and cleanup session without completion
+          kubectl exec "$POD" -- gwa-cleanup \
+            --session "issue-${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --reason cancelled
+
+      # ═══════════════════════════════════════════════════════════════════
+      # REOPEN HANDLERS
+      # ═══════════════════════════════════════════════════════════════════
+
+      - name: "Handler: reopen-issue"
+        if: github.event.inputs.handler == 'reopen-issue'
+        run: |
+          echo "Reopening ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Create new session for reopened issue
+          kubectl exec "$POD" -- gwa-architect \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --phase "${{ github.event.inputs.to_column == 'Planning' && 'planning' || github.event.inputs.to_column == 'In Progress' && 'implementation' || 'planning' }}"
+
+      # ═══════════════════════════════════════════════════════════════════
+      # DIRECT JUMP HANDLERS
+      # ═══════════════════════════════════════════════════════════════════
+
+      - name: "Handler: quick-start"
+        if: github.event.inputs.handler == 'quick-start'
+        run: |
+          echo "Quick-starting implementation for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Skip planning, start implementation directly
+          kubectl exec "$POD" -- gwa-architect \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --phase implementation \
+            --skip-planning
+
+      - name: "Handler: close-without-work"
+        if: github.event.inputs.handler == 'close-without-work'
+        run: |
+          echo "Closing ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }} without work"
+          # Close issue without implementation (won't-fix, duplicate, etc.)
+          echo "TODO: Post closing comment and cleanup any partial session"
+
+      - name: "Handler: skip-qa"
+        if: github.event.inputs.handler == 'skip-qa'
+        run: |
+          echo "Skipping QA for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Move directly to review without running tests
+          echo "TODO: Post skip-QA justification comment"
+
+      - name: "Handler: skip-implementation"
+        if: github.event.inputs.handler == 'skip-implementation'
+        run: |
+          echo "Skipping implementation for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          # Pre-built solution, skip to QA
+          echo "TODO: Trigger QA for pre-built solution"

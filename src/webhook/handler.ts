@@ -226,15 +226,78 @@ async function handleProjectItemEvent(event: ProjectV2ItemEvent): Promise<void> 
   // Determine which transition handler to trigger
   const transitionKey = `${fromColumn}:${toColumn}`;
 
+  // Comprehensive state transition handlers
+  // Format: "FromColumn:ToColumn": "handler-name"
   const transitionHandlers: Record<string, string> = {
-    "Todo:Planning": "start-planning",
-    "Planning:In Progress": "inject-prompt",
-    "In Progress:QA": "run-playwright",
-    "QA:In Progress": "resume-with-failures",
-    "QA:Review": "status-update",
-    "Review:Done": "deploy-and-cleanup",
+    // ═══════════════════════════════════════════════════════════════════
+    // FORWARD FLOW (happy path)
+    // ═══════════════════════════════════════════════════════════════════
+    "Todo:Planning": "start-planning",           // Begin planning phase
+    "Planning:In Progress": "inject-prompt",     // Plan approved, start implementation
+    "In Progress:QA": "run-playwright",          // Implementation done, run tests
+    "QA:Review": "status-update",                // Tests passed, ready for review
+    "Review:Done": "deploy-and-cleanup",         // Approved, deploy and close
+
+    // ═══════════════════════════════════════════════════════════════════
+    // BLOCKED STATE HANDLING
+    // ═══════════════════════════════════════════════════════════════════
+    // Going TO Blocked (pause session, await human input)
+    "Planning:Blocked": "pause-for-question",
+    "In Progress:Blocked": "pause-for-question",
+    "QA:Blocked": "pause-for-question",
+    "Review:Blocked": "pause-for-question",
+
+    // Coming FROM Blocked (resume with answer)
     "Blocked:Planning": "send-answer",
     "Blocked:In Progress": "send-answer",
+    "Blocked:QA": "send-answer",
+    "Blocked:Review": "send-answer",
+
+    // ═══════════════════════════════════════════════════════════════════
+    // QA ITERATION
+    // ═══════════════════════════════════════════════════════════════════
+    "QA:In Progress": "resume-with-failures",    // Tests failed, fix and retry
+    "Review:QA": "request-retest",               // Review found issues, retest
+
+    // ═══════════════════════════════════════════════════════════════════
+    // BACKWARD TRANSITIONS (reverting progress)
+    // ═══════════════════════════════════════════════════════════════════
+    // Back to Planning (requires re-planning)
+    "In Progress:Planning": "request-replanning",
+    "QA:Planning": "request-replanning",
+    "Review:Planning": "request-replanning",
+
+    // Back to In Progress (resume implementation)
+    "Review:In Progress": "resume-implementation",
+
+    // Back to Todo (cancel current work)
+    "Planning:Todo": "cancel-session",
+    "In Progress:Todo": "cancel-session",
+    "QA:Todo": "cancel-session",
+    "Review:Todo": "cancel-session",
+    "Blocked:Todo": "cancel-session",
+
+    // ═══════════════════════════════════════════════════════════════════
+    // REOPENING (from Done)
+    // ═══════════════════════════════════════════════════════════════════
+    "Done:Todo": "reopen-issue",
+    "Done:Planning": "reopen-issue",
+    "Done:In Progress": "reopen-issue",
+    "Done:QA": "reopen-issue",
+    "Done:Review": "reopen-issue",
+    "Done:Blocked": "reopen-issue",
+
+    // ═══════════════════════════════════════════════════════════════════
+    // DIRECT JUMPS (skipping states)
+    // ═══════════════════════════════════════════════════════════════════
+    "Todo:In Progress": "quick-start",           // Skip planning, start immediately
+    "Todo:Done": "close-without-work",           // Close as won't-fix or duplicate
+    "Planning:Done": "close-without-work",       // Close during planning
+    "In Progress:Done": "close-without-work",    // Close during implementation
+    "QA:Done": "close-without-work",             // Close during QA
+    "In Progress:Review": "skip-qa",             // Skip QA, go straight to review
+    "Planning:QA": "skip-implementation",        // Skip implementation (pre-built)
+    "Todo:Blocked": "pause-for-question",        // Blocked before starting
   };
 
   const handler = transitionHandlers[transitionKey];
