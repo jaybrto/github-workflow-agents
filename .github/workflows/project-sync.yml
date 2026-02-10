@@ -9,15 +9,25 @@ name: GWA Project Sync
       item_id:
         description: "Project item node ID"
         required: true
-      issue_number:
-        description: "Issue number"
-        required: true
       from_column:
         description: "Previous column name"
         required: true
       to_column:
         description: "New column name"
         required: true
+      content_type:
+        description: "Content type (Issue, PullRequest, DraftIssue)"
+        required: false
+        default: "Issue"
+      content_id:
+        description: "Content node ID"
+        required: false
+      org:
+        description: "Organization login"
+        required: false
+      handler:
+        description: "Handler name for the transition"
+        required: false
 
   # Note: GitHub Projects v2 doesn't emit webhook events for column changes
   # This workflow is triggered by an external listener or scheduled sync
@@ -89,36 +99,74 @@ jobs:
         run: |
           echo "Project item transition detected:"
           echo "  Item ID: ${{ github.event.inputs.item_id }}"
-          echo "  Issue: #${{ github.event.inputs.issue_number }}"
+          echo "  Content: ${{ github.event.inputs.content_type }} (${{ github.event.inputs.content_id }})"
           echo "  From: ${{ github.event.inputs.from_column }}"
           echo "  To: ${{ github.event.inputs.to_column }}"
+          echo "  Handler: ${{ github.event.inputs.handler }}"
+          echo "  Org: ${{ github.event.inputs.org }}"
+
+      - name: Fetch issue details
+        id: issue
+        env:
+          GH_TOKEN: ${{ secrets.GWA_PROJECT_TOKEN }}
+        run: |
+          # Fetch issue/PR details from content_id
+          CONTENT_ID="${{ github.event.inputs.content_id }}"
+          if [ -n "$CONTENT_ID" ]; then
+            DETAILS=$(gh api graphql -f query='
+              query($id: ID!) {
+                node(id: $id) {
+                  ... on Issue {
+                    number
+                    title
+                    repository { nameWithOwner }
+                  }
+                  ... on PullRequest {
+                    number
+                    title
+                    repository { nameWithOwner }
+                  }
+                }
+              }
+            ' -f id="$CONTENT_ID" 2>/dev/null || echo '{}')
+
+            NUMBER=$(echo "$DETAILS" | jq -r '.data.node.number // empty')
+            REPO=$(echo "$DETAILS" | jq -r '.data.node.repository.nameWithOwner // empty')
+            TITLE=$(echo "$DETAILS" | jq -r '.data.node.title // empty')
+
+            echo "number=$NUMBER" >> "$GITHUB_OUTPUT"
+            echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+            echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+
+            echo "Resolved: $REPO#$NUMBER - $TITLE"
+          fi
 
       - name: Handle Planning transition
         if: github.event.inputs.to_column == 'Planning'
         run: |
-          echo "Starting planning phase for issue #${{ github.event.inputs.issue_number }}"
+          echo "Starting planning phase for ${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }}"
 
           # Planning: Create session, spawn architect agent
           kubectl exec "$POD" -- gwa-architect \
-            --issue "${{ github.event.inputs.issue_number }}" \
-            --repo "${{ github.repository }}" \
+            --issue "${{ steps.issue.outputs.number }}" \
+            --repo "${{ steps.issue.outputs.repo }}" \
             --phase planning
 
       - name: Handle In Progress transition
         if: github.event.inputs.to_column == 'In Progress'
         run: |
-          echo "Starting implementation for issue #${{ github.event.inputs.issue_number }}"
+          echo "Starting implementation for ${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }}"
 
           # In Progress: Plan approved, spawn workers
           kubectl exec "$POD" -- gwa-architect \
-            --issue "${{ github.event.inputs.issue_number }}" \
-            --repo "${{ github.repository }}" \
+            --issue "${{ steps.issue.outputs.number }}" \
+            --repo "${{ steps.issue.outputs.repo }}" \
             --phase implementation
 
       - name: Handle QA transition
         if: github.event.inputs.to_column == 'QA'
         run: |
-          echo "Starting QA for issue #${{ github.event.inputs.issue_number }}"
+          echo "Starting QA for ${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }}"
 
           # QA: Run Playwright e2e tests
           # For now, just log - full implementation would trigger test suite
@@ -127,7 +175,7 @@ jobs:
       - name: Handle Review transition
         if: github.event.inputs.to_column == 'Review'
         run: |
-          echo "Ready for human review: issue #${{ github.event.inputs.issue_number }}"
+          echo "Ready for human review: ${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }}"
 
           # Review: Pause session, notify for human review
           # Full implementation would post summary comment
@@ -135,17 +183,17 @@ jobs:
       - name: Handle Done transition
         if: github.event.inputs.to_column == 'Done'
         run: |
-          echo "Completing issue #${{ github.event.inputs.issue_number }}"
+          echo "Completing ${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }}"
 
           # Done: Destroy session, cleanup resources
           kubectl exec "$POD" -- gwa-cleanup \
-            --session "issue-${{ github.event.inputs.issue_number }}" \
-            --repo "${{ github.repository }}"
+            --session "issue-${{ steps.issue.outputs.number }}" \
+            --repo "${{ steps.issue.outputs.repo }}"
 
       - name: Handle Blocked transition
         if: github.event.inputs.to_column == 'Blocked'
         run: |
-          echo "Issue #${{ github.event.inputs.issue_number }} is blocked"
+          echo "${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }} is blocked"
 
           # Blocked: Pause session, await unblock
           # Full implementation would update project item with blocked reason
