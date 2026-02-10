@@ -28,6 +28,15 @@ name: GWA Project Sync
       handler:
         description: "Handler name for the transition"
         required: false
+      issue_number:
+        description: "Issue/PR number (resolved by webhook)"
+        required: false
+      issue_title:
+        description: "Issue/PR title (resolved by webhook)"
+        required: false
+      issue_repo:
+        description: "Repository (owner/repo) (resolved by webhook)"
+        required: false
 
   # Note: GitHub Projects v2 doesn't emit webhook events for column changes
   # This workflow is triggered by an external listener or scheduled sync
@@ -104,69 +113,35 @@ jobs:
           echo "  To: ${{ github.event.inputs.to_column }}"
           echo "  Handler: ${{ github.event.inputs.handler }}"
           echo "  Org: ${{ github.event.inputs.org }}"
-
-      - name: Fetch issue details
-        id: issue
-        env:
-          GH_TOKEN: ${{ secrets.GWA_PROJECT_TOKEN }}
-        run: |
-          # Fetch issue/PR details from content_id
-          CONTENT_ID="${{ github.event.inputs.content_id }}"
-          if [ -n "$CONTENT_ID" ]; then
-            DETAILS=$(gh api graphql -f query='
-              query($id: ID!) {
-                node(id: $id) {
-                  ... on Issue {
-                    number
-                    title
-                    repository { nameWithOwner }
-                  }
-                  ... on PullRequest {
-                    number
-                    title
-                    repository { nameWithOwner }
-                  }
-                }
-              }
-            ' -f id="$CONTENT_ID" 2>/dev/null || echo '{}')
-
-            NUMBER=$(echo "$DETAILS" | jq -r '.data.node.number // empty')
-            REPO=$(echo "$DETAILS" | jq -r '.data.node.repository.nameWithOwner // empty')
-            TITLE=$(echo "$DETAILS" | jq -r '.data.node.title // empty')
-
-            echo "number=$NUMBER" >> "$GITHUB_OUTPUT"
-            echo "repo=$REPO" >> "$GITHUB_OUTPUT"
-            echo "title=$TITLE" >> "$GITHUB_OUTPUT"
-
-            echo "Resolved: $REPO#$NUMBER - $TITLE"
-          fi
+          echo "  Issue: ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
+          echo "  Title: ${{ github.event.inputs.issue_title }}"
 
       - name: Handle Planning transition
         if: github.event.inputs.to_column == 'Planning'
         run: |
-          echo "Starting planning phase for ${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }}"
+          echo "Starting planning phase for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
 
           # Planning: Create session, spawn architect agent
           kubectl exec "$POD" -- gwa-architect \
-            --issue "${{ steps.issue.outputs.number }}" \
-            --repo "${{ steps.issue.outputs.repo }}" \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
             --phase planning
 
       - name: Handle In Progress transition
         if: github.event.inputs.to_column == 'In Progress'
         run: |
-          echo "Starting implementation for ${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }}"
+          echo "Starting implementation for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
 
           # In Progress: Plan approved, spawn workers
           kubectl exec "$POD" -- gwa-architect \
-            --issue "${{ steps.issue.outputs.number }}" \
-            --repo "${{ steps.issue.outputs.repo }}" \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
             --phase implementation
 
       - name: Handle QA transition
         if: github.event.inputs.to_column == 'QA'
         run: |
-          echo "Starting QA for ${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }}"
+          echo "Starting QA for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
 
           # QA: Run Playwright e2e tests
           # For now, just log - full implementation would trigger test suite
@@ -175,7 +150,7 @@ jobs:
       - name: Handle Review transition
         if: github.event.inputs.to_column == 'Review'
         run: |
-          echo "Ready for human review: ${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }}"
+          echo "Ready for human review: ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
 
           # Review: Pause session, notify for human review
           # Full implementation would post summary comment
@@ -183,17 +158,17 @@ jobs:
       - name: Handle Done transition
         if: github.event.inputs.to_column == 'Done'
         run: |
-          echo "Completing ${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }}"
+          echo "Completing ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
 
           # Done: Destroy session, cleanup resources
           kubectl exec "$POD" -- gwa-cleanup \
-            --session "issue-${{ steps.issue.outputs.number }}" \
-            --repo "${{ steps.issue.outputs.repo }}"
+            --session "issue-${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}"
 
       - name: Handle Blocked transition
         if: github.event.inputs.to_column == 'Blocked'
         run: |
-          echo "${{ steps.issue.outputs.repo }}#${{ steps.issue.outputs.number }} is blocked"
+          echo "${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }} is blocked"
 
           # Blocked: Pause session, await unblock
           # Full implementation would update project item with blocked reason

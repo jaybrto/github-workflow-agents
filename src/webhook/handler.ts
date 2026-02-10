@@ -74,6 +74,84 @@ function verifySignature(payload: string, signature: string): boolean {
   return signature === expectedSignature;
 }
 
+interface ContentDetails {
+  number: number;
+  title: string;
+  repo: string;
+}
+
+/**
+ * Fetch issue/PR details from content node ID using GraphQL
+ */
+async function fetchContentDetails(contentNodeId: string): Promise<ContentDetails | null> {
+  const query = `
+    query($id: ID!) {
+      node(id: $id) {
+        ... on Issue {
+          number
+          title
+          repository { nameWithOwner }
+        }
+        ... on PullRequest {
+          number
+          title
+          repository { nameWithOwner }
+        }
+      }
+    }
+  `;
+
+  try {
+    const response = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${GITHUB_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        variables: { id: contentNodeId },
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`[Webhook] GraphQL request failed: ${response.status}`);
+      return null;
+    }
+
+    const result = await response.json() as {
+      data?: {
+        node?: {
+          number?: number;
+          title?: string;
+          repository?: { nameWithOwner?: string };
+        };
+      };
+      errors?: Array<{ message: string }>;
+    };
+
+    if (result.errors) {
+      console.error(`[Webhook] GraphQL errors:`, result.errors);
+      return null;
+    }
+
+    const node = result.data?.node;
+    if (!node?.number || !node?.repository?.nameWithOwner) {
+      console.error(`[Webhook] Could not resolve content details for ${contentNodeId}`);
+      return null;
+    }
+
+    return {
+      number: node.number,
+      title: node.title || "",
+      repo: node.repository.nameWithOwner,
+    };
+  } catch (error) {
+    console.error(`[Webhook] Error fetching content details:`, error);
+    return null;
+  }
+}
+
 /**
  * Trigger a workflow via workflow_dispatch
  */
@@ -166,6 +244,14 @@ async function handleProjectItemEvent(event: ProjectV2ItemEvent): Promise<void> 
     return;
   }
 
+  // Fetch issue/PR details before triggering workflow
+  const contentDetails = await fetchContentDetails(contentNodeId);
+  if (!contentDetails) {
+    console.error(`[Webhook] Failed to fetch content details, skipping workflow trigger`);
+    return;
+  }
+
+  console.log(`[Webhook] Resolved: ${contentDetails.repo}#${contentDetails.number} - ${contentDetails.title}`);
   console.log(`[Webhook] Triggering handler: ${handler}`);
 
   // Trigger the project-sync workflow with the transition info
@@ -181,6 +267,9 @@ async function handleProjectItemEvent(event: ProjectV2ItemEvent): Promise<void> 
       content_id: contentNodeId,
       org: orgLogin,
       handler: handler,
+      issue_number: String(contentDetails.number),
+      issue_title: contentDetails.title,
+      issue_repo: contentDetails.repo,
     }
   );
 
