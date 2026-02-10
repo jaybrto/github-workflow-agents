@@ -1,10 +1,59 @@
-# GitHub Workflow Agents (GWA)
+# GitHub Workflow Agents (GWA) v3.3
 
-Automated Claude Code integration for GitHub PRs with persistent sessions on Kubernetes. Manage AI-powered code review and implementation through GitHub issues and pull requests.
+Automated Claude Code integration for GitHub with persistent sessions, multi-agent orchestration, and GitHub Projects workflow automation on Kubernetes.
 
 ## Overview
 
-GWA runs Claude Code in long-lived Kubernetes pods with tmux session management. When a PR is opened or updated, Claude automatically reviews code, implements changes, and responds to feedback—all while maintaining conversation context across interactions.
+GWA transforms GitHub issues into completed, tested pull requests using Claude Code agents. Issues flow through a GitHub Project board (Todo → Planning → In Progress → QA → Review → Done), with Claude agents automatically handling each phase transition.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           GitHub Project Board                               │
+├─────────┬──────────┬─────────────┬────────┬─────────┬──────────┬───────────┤
+│  Todo   │ Planning │ In Progress │   QA   │ Blocked │  Review  │   Done    │
+│         │          │             │        │         │          │           │
+│ ┌─────┐ │ ┌─────┐  │  ┌─────┐    │┌─────┐ │ ┌─────┐ │ ┌─────┐  │  ┌─────┐  │
+│ │Issue│─┼▶│Plan │──┼─▶│Build│────┼▶│Test│─┼▶│Wait │─┼▶│Review│──┼─▶│Merge│  │
+│ └─────┘ │ └─────┘  │  └─────┘    │└─────┘ │ └─────┘ │ └─────┘  │  └─────┘  │
+└─────────┴──────────┴─────────────┴────────┴─────────┴──────────┴───────────┘
+              │              │            │        │
+              ▼              ▼            ▼        ▼
+         ┌─────────┐   ┌──────────┐  ┌────────┐ ┌────────┐
+         │Architect│   │ Workers  │  │Playwright│ │Human  │
+         │ Agent   │   │ (Swarm)  │  │  Tests   │ │ Input │
+         └─────────┘   └──────────┘  └────────┘ └────────┘
+```
+
+## Features
+
+### Core Capabilities
+- **GitHub Projects Integration**: Automated workflow via column transitions
+- **Multi-Agent Swarm**: Architect agent spawns worker agents for parallel task execution
+- **Persistent Sessions**: SQLite + Redis for session state across pod restarts
+- **Git Worktrees**: Isolated worktree per issue for safe parallel work
+- **Observability**: Full OpenTelemetry instrumentation (traces, metrics, logs)
+
+### Column Transition Automation
+
+| Transition | Trigger | Action |
+|------------|---------|--------|
+| Todo → Planning | Issue added to board | Create session, start planning REPL |
+| Planning → In Progress | Plan approved | Inject implementation prompt |
+| In Progress → QA | Code complete | Run Playwright e2e tests |
+| QA → In Progress | Tests fail | Resume REPL with failure context |
+| Blocked → Previous | Answer received | Send answer to blocked REPL |
+| Review → Done | Review approved | Merge PR, cleanup session |
+
+### Security Features
+- Input validation on all CLI parameters
+- Command injection prevention (temp file approach)
+- SQL injection prevention (parameterized queries)
+- Path traversal protection (allowlisted directories)
+- Environment variable whitelisting for subprocesses
+
+## Architecture
+
+### System Components
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
@@ -12,33 +61,30 @@ GWA runs Claude Code in long-lived Kubernetes pods with tmux session management.
 │   (trigger)     │     │  (StatefulSet)   │     │   (in tmux)     │
 └─────────────────┘     └──────────────────┘     └─────────────────┘
                                │
-                    ┌──────────┼──────────┐
-                    ▼          ▼          ▼
-              ┌─────────┐ ┌────────┐ ┌─────────┐
-              │  Redis  │ │ Longhorn│ │  Alloy  │
-              │(sessions)│ │(storage)│ │ (OTEL) │
-              └─────────┘ └────────┘ └─────────┘
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+        ┌──────────┐    ┌───────────┐    ┌──────────┐
+        │  SQLite  │    │  Redis    │    │  Alloy   │
+        │ (sessions)│    │ (cache)   │    │  (OTEL)  │
+        └──────────┘    └───────────┘    └──────────┘
 ```
 
-## Features
+### CLI Tools
 
-- **Persistent Sessions**: Claude conversations persist across pod restarts via Longhorn storage
-- **Git Worktrees**: Each PR gets an isolated worktree for safe parallel work
-- **Session Tracking**: Redis tracks PR-to-tmux-window mappings with 7-day TTL
-- **Observability**: Full OpenTelemetry instrumentation (traces, metrics, logs) via Grafana LGTM stack
-- **Auto-Instrumentation**: Automatic tracing for Redis and HTTP calls
-
-## Architecture
-
-### Components
-
-| Component | Description |
-|-----------|-------------|
-| `gwa-orchestrate` | Main PR work lifecycle - creates worktrees, runs Claude |
-| `gwa-respond` | Handles `@claude-answer` responses from users |
-| `gwa-cleanup` | CronJob that cleans up stale PR sessions |
-| `gwa-health-check` | Liveness/readiness probe endpoint |
-| `gwa-debug-redis` | Debug utility for Redis inspection |
+| Tool | Purpose |
+|------|---------|
+| `gwa-orchestrate` | Main PR work lifecycle |
+| `gwa-respond` | Handle `@claude-answer` responses |
+| `gwa-cleanup` | Clean up stale sessions (CronJob) |
+| `gwa-architect` | Create plans and spawn workers |
+| `gwa-worker` | Execute assigned sub-tasks |
+| `gwa-setup-project` | Create GitHub Project for new repo |
+| `gwa-start-planning` | Todo → Planning transition |
+| `gwa-inject-prompt` | Planning → In Progress transition |
+| `gwa-run-playwright` | In Progress → QA transition |
+| `gwa-resume-with-failures` | QA → In Progress transition |
+| `gwa-send-answer` | Blocked → Previous transition |
+| `gwa-deploy-and-cleanup` | Review → Done transition |
 
 ### Tech Stack
 
@@ -48,8 +94,9 @@ GWA runs Claude Code in long-lived Kubernetes pods with tmux session management.
 | Container | Node.js 22 (for Claude Code CLI) |
 | Orchestration | Kubernetes (K3s) |
 | Storage | Longhorn (persistent volumes) |
-| Session State | Redis (ioredis) |
-| GitHub API | @octokit/rest |
+| Database | SQLite with WAL mode |
+| Session Cache | Redis (ioredis) |
+| GitHub API | @octokit/rest + GraphQL |
 | Observability | OpenTelemetry → Alloy → Tempo/Mimir/Loki |
 
 ## Prerequisites
@@ -68,7 +115,8 @@ GWA runs Claude Code in long-lived Kubernetes pods with tmux session management.
 ```bash
 kubectl create secret generic gwa-secrets \
   --from-literal=github-token=ghp_xxxx \
-  --from-literal=claude-oauth-token=sk-ant-xxxx
+  --from-literal=claude-oauth-token=sk-ant-xxxx \
+  --from-literal=anthropic-api-key=sk-ant-xxxx
 ```
 
 ### 2. Create GHCR Pull Secret
@@ -86,26 +134,32 @@ kubectl create secret docker-registry ghcr-secret \
 kubectl apply -f k8s/
 ```
 
-### 4. Configure GitHub Actions
+### 4. Setup GitHub Project (per repository)
 
-Add workflows that trigger `gwa-orchestrate` on PR events:
+```bash
+gwa-setup-project --org <organization> --repo <repo-name>
+```
+
+### 5. Configure GitHub Actions
+
+Add the workflow that triggers on project card movements:
 
 ```yaml
+name: GWA Project Sync
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  project_card:
+    types: [moved]
+  issues:
+    types: [opened, labeled]
 
 jobs:
-  orchestrate:
+  sync:
     runs-on: self-hosted
     steps:
-      - name: Run GWA Orchestrate
+      - name: Handle Column Transition
         run: |
-          gwa-orchestrate \
-            --pr ${{ github.event.pull_request.number }} \
-            --repo ${{ github.repository }} \
-            --trigger pr_opened \
-            --actor ${{ github.actor }}
+          # Transitions are handled by the respective gwa-* tools
+          # based on the source and destination columns
 ```
 
 ## Development
@@ -122,9 +176,31 @@ bun run typecheck
 # Run tests
 bun test
 
-# Build binaries
+# Build all binaries
 bun run build
 ```
+
+### Running Tests
+
+```bash
+# Run all tests
+bun test
+
+# Run specific test file
+bun test src/tests/preflight.test.ts
+
+# Run with coverage
+bun test --coverage
+```
+
+### Test Coverage
+
+| Test File | Coverage |
+|-----------|----------|
+| `db.test.ts` | Schema validation, CRUD operations |
+| `imports.test.ts` | Library export validation |
+| `templates.test.ts` | File existence, JSON validation |
+| `preflight.test.ts` | Pre-deployment checks |
 
 ### Building the Container
 
@@ -136,79 +212,126 @@ docker build -t ghcr.io/jaybrto/github-workflow-agents:dev .
 git push origin main
 ```
 
-### Running Locally
+## Project Structure
 
-```bash
-# Port-forward Redis
-kubectl port-forward svc/redis 6379:6379 &
-
-# Port-forward Alloy (for telemetry)
-kubectl port-forward -n alloy svc/alloy 4317:4317 4318:4318 &
-
-# Run orchestrate
-OTEL_SERVICE_NAME=github-workflow-agents \
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
-REDIS_HOST=localhost \
-bun run src/orchestrate.ts --pr 123 --repo owner/repo --trigger manual
+```
+├── .claude/                    # Claude Code configuration
+│   └── CLAUDE.md              # Project context for Claude
+├── .github/workflows/         # GitHub Actions
+│   ├── build-image.yml        # Container build
+│   └── project-sync.yml       # Project card sync
+├── k8s/                       # Kubernetes manifests
+│   ├── gwa-runner-statefulset.yaml
+│   ├── gwa-runner-configmap.yaml
+│   ├── gwa-cleanup-cronjob.yaml
+│   └── charts/                # Helm charts
+│       └── gwa-onboarding/    # ArgoCD onboarding
+├── src/
+│   ├── orchestrate.ts         # Main PR orchestration
+│   ├── respond.ts             # Answer handling
+│   ├── cleanup.ts             # Stale session cleanup
+│   ├── architect.ts           # Plan creation, worker spawning
+│   ├── worker.ts              # Sub-task execution
+│   ├── setup-project.ts       # GitHub Project setup
+│   ├── transitions/           # Column transition handlers
+│   │   ├── start-planning.ts
+│   │   ├── inject-prompt.ts
+│   │   ├── run-playwright.ts
+│   │   ├── resume-with-failures.ts
+│   │   ├── send-answer.ts
+│   │   └── deploy-and-cleanup.ts
+│   ├── tests/                 # Test suite
+│   │   ├── db.test.ts
+│   │   ├── imports.test.ts
+│   │   ├── templates.test.ts
+│   │   └── preflight.test.ts
+│   └── lib/
+│       ├── claude.ts          # Claude Code subprocess
+│       ├── github.ts          # GitHub API client
+│       ├── projects.ts        # GitHub Projects v2 GraphQL
+│       ├── redis.ts           # Redis client
+│       ├── db.ts              # SQLite database
+│       ├── tmux.ts            # Tmux session management
+│       ├── swarm.ts           # Multi-agent orchestration
+│       ├── telemetry.ts       # OpenTelemetry setup
+│       ├── pr-filter.ts       # Claude PR detection
+│       ├── plan-sync.ts       # Plan-to-issue linking
+│       ├── task-analyzer.ts   # REPL vs headless decision
+│       ├── comment-generator.ts # Smart PR comments
+│       ├── repl-session.ts    # REPL lifecycle
+│       ├── checkpoint.ts      # State snapshots
+│       └── recovery.ts        # Session recovery
+├── templates/
+│   ├── github-project.json    # Project board template
+│   └── plans/                 # Plan document templates
+│       ├── plan.md
+│       ├── prompt.md
+│       ├── checklist.md
+│       ├── decisions.md
+│       └── snippets.md
+├── schema.sql                 # SQLite schema (v2.1)
+├── Dockerfile                 # Multi-stage build
+└── package.json
 ```
 
-## CLI Tools
+## How It Works
 
-### gwa-orchestrate
+### Issue-to-PR Workflow
 
-Main entry point for PR processing.
+1. **Issue Created**: Add to project board "Todo" column
+2. **Planning Started**: `gwa-start-planning` creates session, Claude designs solution
+3. **Plan Approved**: Move to "In Progress", `gwa-inject-prompt` starts implementation
+4. **Implementation**: Claude (or worker swarm) builds the feature
+5. **QA Phase**: `gwa-run-playwright` runs e2e tests
+6. **Review**: Human reviews the PR
+7. **Completion**: `gwa-deploy-and-cleanup` merges and cleans up
 
-```bash
-gwa-orchestrate \
-  --pr <number> \
-  --repo <owner/repo> \
-  --trigger <pr_opened|pr_updated|comment|manual> \
-  [--branch <branch-name>] \
-  [--comment <comment-text>] \
-  [--actor <github-username>]
+### Multi-Agent Swarm
+
+For complex tasks, the Architect agent can spawn worker agents:
+
+```
+┌────────────────────────────────────────────────────┐
+│                 Architect Agent                     │
+│  - Analyzes requirements                           │
+│  - Creates task breakdown                          │
+│  - Spawns workers for parallel execution           │
+│  - Aggregates results                              │
+└────────────────────────────────────────────────────┘
+         │           │           │
+         ▼           ▼           ▼
+    ┌─────────┐ ┌─────────┐ ┌─────────┐
+    │ Worker  │ │ Worker  │ │ Worker  │
+    │ Task 1  │ │ Task 2  │ │ Task 3  │
+    └─────────┘ └─────────┘ └─────────┘
 ```
 
-### gwa-respond
+### Session Persistence
 
-Handle user responses to Claude questions.
-
-```bash
-gwa-respond \
-  --pr <number> \
-  --repo <owner/repo> \
-  --comment <answer-text> \
-  --actor <github-username>
-```
-
-### gwa-cleanup
-
-Clean up stale sessions (usually run via CronJob).
-
-```bash
-gwa-cleanup [--dry-run]
-```
+- **SQLite**: Primary session store with full audit trail
+- **Redis**: Fast PR→session lookups (7-day TTL)
+- **Longhorn**: Persists `~/.claude/` across pod restarts
+- **Worktrees**: Isolated at `/home/runner/worktrees/issue-{N}/`
 
 ## Observability
-
-GWA uses OpenTelemetry for full observability:
 
 ### Traces
 
 Sent to Tempo via Alloy (gRPC on port 4317):
 - `orchestrate` - Full PR processing span
-- `respond` - Answer handling span
+- `transition.*` - Column transition handlers
+- `swarm.*` - Multi-agent operations
 - `redis.*` - Auto-instrumented Redis commands
-- `HTTP *` - Auto-instrumented HTTP calls
 
 ### Metrics
 
 Sent to Mimir via Alloy:
 - `gwa_pr_orchestrations_total` - PR orchestration runs
-- `gwa_pr_responses_total` - Response handling runs
 - `gwa_claude_invocations_total` - Claude CLI invocations
 - `gwa_claude_duration_seconds` - Claude invocation duration
 - `gwa_github_api_calls_total` - GitHub API calls
 - `gwa_sessions_active` - Active Claude sessions
+- `gwa_swarm_workers_total` - Swarm worker operations
 
 ### Logs
 
@@ -221,65 +344,41 @@ Sent to Loki via Alloy (HTTP on port 4318):
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy.alloy.svc.cluster.local:4317
 OTEL_SERVICE_NAME=github-workflow-agents
-OTEL_SERVICE_VERSION=1.0.0
+OTEL_SERVICE_VERSION=3.3.0
 DEPLOYMENT_ENVIRONMENT=production
 ```
 
-## Project Structure
+## Database Schema
 
-```
-├── .claude/                    # Claude Code configuration
-│   ├── CLAUDE.md              # Project context for Claude
-│   ├── commands/              # Simple slash commands
-│   └── skills/                # Complex multi-file skills
-├── .github/workflows/         # GitHub Actions
-│   └── build-image.yml        # Container build workflow
-├── k8s/                       # Kubernetes manifests
-│   ├── gwa-runner-statefulset.yaml
-│   ├── gwa-cleanup-cronjob.yaml
-│   └── ...
-├── src/
-│   ├── orchestrate.ts         # Main PR orchestration
-│   ├── respond.ts             # Answer handling
-│   ├── cleanup.ts             # Stale session cleanup
-│   ├── health-check.ts        # Health probe
-│   ├── debug-redis.ts         # Redis debug tool
-│   └── lib/
-│       ├── claude.ts          # Claude Code subprocess
-│       ├── github.ts          # GitHub API client
-│       ├── redis.ts           # Redis client
-│       ├── tmux.ts            # Tmux session management
-│       ├── git.ts             # Git operations
-│       ├── telemetry.ts       # OpenTelemetry setup
-│       └── types.ts           # TypeScript types
-├── Dockerfile                 # Multi-stage build
-├── package.json
-└── tsconfig.json
-```
+GWA uses SQLite with WAL mode for concurrent access. Key tables:
 
-## How It Works
+| Table | Purpose |
+|-------|---------|
+| `sessions` | Core session tracking |
+| `questions` | Claude questions and answers |
+| `agent_tasks` | Swarm worker task tracking |
+| `activity_log` | Full audit trail |
+| `checkpoints` | State snapshots for recovery |
+| `commits` | Commits made by Claude |
 
-### PR Workflow
+See `schema.sql` for full schema (v2.1).
 
-1. **PR Opened/Updated**: GitHub Action triggers `gwa-orchestrate`
-2. **Session Check**: Check Redis for existing session
-3. **Worktree Setup**: Create/update git worktree for the PR
-4. **Claude Execution**: Run Claude Code with the PR context
-5. **Result Handling**: Post comments, update status checks
-6. **Session Persistence**: Store session info in Redis
+## Security
 
-### Question Flow
+### Input Validation
+- Repo format: `^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$`
+- PR number: `1-999999999`
+- Actor format: GitHub username pattern
+- Comment size: Max 64KB
 
-1. **Claude Asks**: Claude posts a question via PR comment
-2. **User Answers**: User replies with `@claude-answer: <response>`
-3. **Answer Processed**: GitHub Action triggers `gwa-respond`
-4. **Session Resumed**: Claude continues with `--continue` flag
+### Injection Prevention
+- Shell commands use temp files for user content
+- SQL queries use parameterized values
+- Template paths validated against allowlist
 
-### Session Persistence
-
-- **Redis**: Tracks PR → tmux window mappings (7-day TTL)
-- **Longhorn**: Persists `~/.claude/` directory across restarts
-- **Worktrees**: Isolated git worktrees in `/home/runner/worktrees/pr-{N}/`
+### Environment Variables
+- Claude subprocess receives whitelisted env vars only
+- Sensitive tokens not passed to child processes
 
 ## Contributing
 
@@ -287,8 +386,9 @@ DEPLOYMENT_ENVIRONMENT=production
 2. Create a feature branch: `git checkout -b feature/issue-123-description`
 3. Make changes following the existing code style
 4. Run type checks: `bun run typecheck`
-5. Commit with conventional commits: `git commit -m "feat(scope): description"`
-6. Push and open a PR
+5. Run tests: `bun test`
+6. Commit with conventional commits: `git commit -m "feat(scope): description"`
+7. Push and open a PR
 
 ## License
 
