@@ -1,0 +1,106 @@
+---
+# ArgoCD PostSync Hook for GWA Onboarding
+# Creates GitHub Project when a new repository is onboarded
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gwa-onboard-{{ .Values.repository | replace "/" "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: gwa-onboarding
+    app.kubernetes.io/component: postsync-hook
+    app.kubernetes.io/part-of: github-workflow-agents
+    repository: {{ .Values.repository | replace "/" "-" }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gwa-onboarding
+        repository: {{ .Values.repository | replace "/" "-" }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ .Values.serviceAccount | default "gwa-onboarding" }}
+      containers:
+        - name: setup-project
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "Always" }}
+          command:
+            - gwa-setup-project
+            - --org
+            - {{ .Values.organization }}
+            - --repo
+            - {{ .Values.repositoryName }}
+            {{- if .Values.projectNumber }}
+            - --project-number
+            - "{{ .Values.projectNumber }}"
+            {{- end }}
+            - --template
+            - /templates/github-project.json
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName | default "gwa-secrets" }}
+                  key: github-token
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otlp.endpoint | default "http://alloy.alloy.svc.cluster.local:4317" }}
+            - name: OTEL_SERVICE_NAME
+              value: gwa-onboarding
+          volumeMounts:
+            - name: templates
+              mountPath: /templates
+              readOnly: true
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+      volumes:
+        - name: templates
+          configMap:
+            name: gwa-project-templates
+---
+# ConfigMap containing the project template
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gwa-project-templates
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: gwa-onboarding
+    app.kubernetes.io/component: templates
+data:
+  github-project.json: |
+    {
+      "project": {
+        "title": "{{ .Values.repositoryName }} - Claude Workflow",
+        "description": "Automated issue processing powered by Claude Code",
+        "public": false
+      },
+      "columns": [
+        {"name": "Todo", "description": "Issues waiting to be processed", "color": "gray"},
+        {"name": "Planning", "description": "Creating implementation plan", "color": "purple"},
+        {"name": "In Progress", "description": "Implementation underway", "color": "blue"},
+        {"name": "QA", "description": "Automated testing", "color": "yellow"},
+        {"name": "Blocked", "description": "Waiting for input", "color": "red"},
+        {"name": "Review", "description": "Ready for code review", "color": "orange"},
+        {"name": "Done", "description": "Completed and merged", "color": "green"}
+      ],
+      "customFields": [
+        {"name": "Estimated Hours", "dataType": "NUMBER", "description": "Estimated time"},
+        {"name": "Session ID", "dataType": "TEXT", "description": "GWA session ID"},
+        {"name": "Plan Status", "dataType": "SINGLE_SELECT", "description": "Plan status", "options": ["Draft", "Approved", "In Progress", "Completed"]},
+        {"name": "Tasks Count", "dataType": "NUMBER", "description": "Total tasks"},
+        {"name": "Tasks Completed", "dataType": "NUMBER", "description": "Completed tasks"},
+        {"name": "PR Number", "dataType": "NUMBER", "description": "Pull request number"},
+        {"name": "Complexity", "dataType": "SINGLE_SELECT", "description": "Complexity", "options": ["Low", "Medium", "High"]},
+        {"name": "Risk Level", "dataType": "SINGLE_SELECT", "description": "Risk", "options": ["Low", "Medium", "High"]}
+      ]
+    }

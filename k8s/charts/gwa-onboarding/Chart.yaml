@@ -1,0 +1,18 @@
+---
+apiVersion: v2
+name: gwa-onboarding
+description: GitHub Workflow Agents onboarding chart for new repositories
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - github
+  - automation
+  - claude
+  - claude-code
+  - workflow
+home: https://github.com/jaybrto/github-workflow-agents
+sources:
+  - https://github.com/jaybrto/github-workflow-agents
+maintainers:
+  - name: jaybrto

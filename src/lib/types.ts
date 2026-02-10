@@ -7,6 +7,7 @@ export interface PRContext {
   trigger: "pr_event" | "comment" | "manual";
   comment?: string;
   actor: string;
+  mode?: "repl" | "headless";
 }
 
 export interface PRSession {
@@ -43,6 +44,7 @@ export interface OrchestrateArgs {
   branch?: string;
   comment?: string;
   actor: string;
+  mode?: "repl" | "headless";
 }
 
 export interface RespondArgs {

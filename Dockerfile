@@ -8,14 +8,19 @@ RUN bun install --frozen-lockfile || bun install
 
 COPY tsconfig.json ./
 COPY src/ src/
+COPY schema.sql ./
 
 # Build all CLI tools as standalone executables
 RUN mkdir -p dist && \
     bun build src/orchestrate.ts --compile --outfile dist/gwa-orchestrate && \
     bun build src/respond.ts --compile --outfile dist/gwa-respond && \
     bun build src/cleanup.ts --compile --outfile dist/gwa-cleanup && \
-    bun build src/debug-redis.ts --compile --outfile dist/gwa-debug-redis && \
-    bun build src/health-check.ts --compile --outfile dist/gwa-health-check
+    bun build src/health-check.ts --compile --outfile dist/gwa-health-check && \
+    bun build src/ask-question.ts --compile --outfile dist/gwa-ask-question && \
+    bun build src/session-complete.ts --compile --outfile dist/gwa-session-complete && \
+    bun build src/architect.ts --compile --outfile dist/gwa-architect && \
+    bun build src/worker.ts --compile --outfile dist/gwa-worker && \
+    bun build src/setup-project.ts --compile --outfile dist/gwa-setup-project
 
 # Stage 2: Runtime image with Node.js (for Claude Code) + compiled Bun tools
 FROM node:22-bookworm-slim
@@ -23,13 +28,15 @@ FROM node:22-bookworm-slim
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux \
-    redis-tools \
+    sqlite3 \
     git \
     curl \
     jq \
     watch \
     ca-certificates \
     gnupg \
+    aha \
+    wkhtmltopdf \
     && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI
@@ -52,9 +59,16 @@ RUN npm install -g @anthropic-ai/claude-code && \
 COPY --from=builder /build/dist/gwa-orchestrate /usr/local/bin/
 COPY --from=builder /build/dist/gwa-respond /usr/local/bin/
 COPY --from=builder /build/dist/gwa-cleanup /usr/local/bin/
-COPY --from=builder /build/dist/gwa-debug-redis /usr/local/bin/
 COPY --from=builder /build/dist/gwa-health-check /usr/local/bin/
+COPY --from=builder /build/dist/gwa-ask-question /usr/local/bin/
+COPY --from=builder /build/dist/gwa-session-complete /usr/local/bin/
+COPY --from=builder /build/dist/gwa-architect /usr/local/bin/
+COPY --from=builder /build/dist/gwa-worker /usr/local/bin/
+COPY --from=builder /build/dist/gwa-setup-project /usr/local/bin/
 RUN chmod +x /usr/local/bin/gwa-*
+
+# Copy SQLite schema
+COPY --from=builder /build/schema.sql /home/runner/.claude/schema.sql
 
 # Create runner user and directories
 RUN useradd -m -d /home/runner -s /bin/bash runner && \

@@ -127,6 +127,11 @@ const redisOperationCounter = meter.createCounter("gwa_redis_operations_total", 
   unit: "1",
 });
 
+const dbOperationCounter = meter.createCounter("gwa_db_operations_total", {
+  description: "Total SQLite database operations",
+  unit: "1",
+});
+
 // Histograms
 const claudeDurationHistogram = meter.createHistogram("gwa_claude_duration_seconds", {
   description: "Claude invocation duration",
@@ -307,6 +312,11 @@ export const Metrics = {
     redisOperationCounter.add(1, { operation, success: success.toString() });
   },
 
+  // SQLite Database
+  recordDbOperation(operation: string, success: boolean) {
+    dbOperationCounter.add(1, { operation, success: success.toString() });
+  },
+
   // Sessions
   sessionStarted() {
     activeSessionsGauge.add(1);
@@ -314,6 +324,16 @@ export const Metrics = {
 
   sessionEnded() {
     activeSessionsGauge.add(-1);
+  },
+
+  // Swarm
+  recordSwarmWorker(status: "spawned" | "completed" | "failed") {
+    // Reuse existing counter for swarm worker events
+    prOrchestrationCounter.add(1, { operation: "swarm_worker", status });
+  },
+
+  recordSwarmCleanup() {
+    prCleanupCounter.add(1, { operation: "swarm" });
   },
 };
 

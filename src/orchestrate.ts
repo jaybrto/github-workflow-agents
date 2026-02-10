@@ -9,6 +9,9 @@ import * as github from "./lib/github.js";
 import * as tmux from "./lib/tmux.js";
 import * as git from "./lib/git.js";
 import * as claude from "./lib/claude.js";
+import { startREPL } from "./lib/repl-session.js";
+import { analyzeTaskComplexity } from "./lib/task-analyzer.js";
+import { generateComment } from "./lib/comment-generator.js";
 
 async function main() {
   const { values } = parseArgs({
@@ -20,6 +23,7 @@ async function main() {
       branch: { type: "string" },
       comment: { type: "string" },
       actor: { type: "string" },
+      mode: { type: "string" },
     },
   });
 
@@ -30,10 +34,18 @@ async function main() {
     branch: values.branch,
     comment: values.comment,
     actor: values.actor || "unknown",
+    mode: values.mode as OrchestrateArgs["mode"],
   };
 
+  // Validate mode if provided
+  if (args.mode && !["repl", "headless"].includes(args.mode)) {
+    console.error("Error: --mode must be 'repl' or 'headless'");
+    await shutdownTelemetry();
+    process.exit(1);
+  }
+
   if (!args.pr || !args.repo) {
-    console.error("Usage: gwa-orchestrate --pr <number> --repo <owner/repo>");
+    console.error("Usage: gwa-orchestrate --pr <number> --repo <owner/repo> [--mode <repl|headless>]");
     await shutdownTelemetry();
     process.exit(1);
   }
@@ -112,23 +124,85 @@ async function orchestrate(ctx: PRContext): Promise<void> {
     await tmux.ensureSession();
   });
 
-  // 2. Get branch name if not provided
+  // 2. Get PR details (branch and diff stats for mode selection)
   let branch = ctx.branch;
-  if (!branch) {
-    branch = await withSpan(
-      "github.getPRBranch",
+  let prDetails: { title: string; body: string | null } | undefined;
+  let diffStats: github.DiffStats | undefined;
+
+  if (!branch || !ctx.mode) {
+    // We need PR details for branch name and/or mode selection
+    const details = await withSpan(
+      "github.getPRDetails",
       async (span) => {
-        log("debug", "Fetching branch name from GitHub");
-        const branchName = await github.getPRBranch(ctx.owner, ctx.repoName, ctx.pr);
-        span.setAttribute("pr.branch", branchName);
-        Metrics.recordGitHubApiCall("getPRBranch", true);
-        return branchName;
+        log("debug", "Fetching PR details from GitHub");
+        const d = await github.getPRDetails(ctx.owner, ctx.repoName, ctx.pr);
+        span.setAttribute("pr.branch", d.head);
+        span.setAttribute("pr.title", d.title);
+        Metrics.recordGitHubApiCall("getPRDetails", true);
+        return d;
       },
-      { attributes: { "github.operation": "getPRBranch" } }
+      { attributes: { "github.operation": "getPRDetails" } }
     );
+
+    branch = branch || details.head;
+    prDetails = { title: details.title, body: details.body };
+
+    // Get diff stats for mode selection if needed
+    if (!ctx.mode) {
+      diffStats = await withSpan(
+        "github.getPRDiffStats",
+        async (span) => {
+          log("debug", "Fetching PR diff stats");
+          const stats = await github.getPRDiffStats(ctx.owner, ctx.repoName, ctx.pr);
+          span.setAttribute("pr.diff.additions", stats.additions);
+          span.setAttribute("pr.diff.deletions", stats.deletions);
+          span.setAttribute("pr.diff.files", stats.changedFiles);
+          return stats;
+        },
+        { attributes: { "github.operation": "getPRDiffStats" } }
+      );
+    }
   }
 
-  // 3. Setup or update git worktree
+  // 3. Determine execution mode
+  let executionMode: "repl" | "headless" = ctx.mode || "repl";
+
+  if (!ctx.mode) {
+    // Auto-detect mode using task analyzer
+    const analysisResult = await withSpan(
+      "mode.analyze",
+      async (span) => {
+        log("info", "Analyzing task complexity for mode selection");
+
+        const result = await analyzeTaskComplexity({
+          trigger: ctx.trigger,
+          prTitle: prDetails?.title,
+          prBody: prDetails?.body || undefined,
+          commentBody: ctx.comment,
+          diffStats,
+        });
+
+        span.setAttribute("mode.selected", result.mode);
+        span.setAttribute("mode.confidence", result.confidence);
+        span.setAttribute("mode.reasoning", result.reasoning);
+
+        log("info", "Mode selected", {
+          mode: result.mode,
+          confidence: result.confidence,
+          reasoning: result.reasoning,
+        });
+
+        return result;
+      },
+      { attributes: { "mode.operation": "analyze" } }
+    );
+
+    executionMode = analysisResult.mode;
+  } else {
+    log("info", "Using explicitly specified mode", { mode: ctx.mode });
+  }
+
+  // 4. Setup or update git worktree
   let worktreePath: string;
   await withSpan("git.setup", async (span) => {
     log("debug", "Setting up git worktree");
@@ -149,35 +223,128 @@ async function orchestrate(ctx: PRContext): Promise<void> {
     span.setAttribute("worktree.path", worktreePath);
   });
 
-  // 4. Get or create session in Redis
+  // 5. Get or create session in Redis
   let session = await withSpan("redis.getSession", async () => {
     const s = await redis.getSession(ctx.repo, ctx.pr);
     Metrics.recordRedisOperation("getSession", true);
     return s;
   });
 
+  // 6. Build prompt based on trigger
+  const prompt = buildPrompt(ctx);
+  log("debug", "Built prompt", { promptLength: prompt.length });
+
+  // 7. Execute based on mode
+  if (executionMode === "repl") {
+    await executeREPLMode(ctx, worktreePath!, prompt, session);
+  } else {
+    await executeHeadlessMode(ctx, worktreePath!, prompt, session);
+  }
+}
+
+/**
+ * Execute in REPL mode: Start interactive session and exit.
+ * Claude manages its own lifecycle via ask-question and session-complete tools.
+ */
+async function executeREPLMode(
+  ctx: PRContext,
+  worktreePath: string,
+  prompt: string,
+  existingSession: Awaited<ReturnType<typeof redis.getSession>>
+): Promise<void> {
+  await withSpan(
+    "repl.execute",
+    async (span) => {
+      span.setAttribute("repl.working_dir", worktreePath);
+
+      log("info", "Starting REPL mode", {
+        pr: ctx.pr,
+        workingDir: worktreePath,
+      });
+
+      await redis.updateSessionStatus(ctx.repo, ctx.pr, "active");
+
+      // Start the REPL session
+      const replResult = await startREPL(worktreePath, prompt);
+
+      span.setAttribute("repl.session_id", replResult.session.sessionId);
+      span.setAttribute("repl.tmux_window", replResult.session.tmuxWindow);
+
+      // Update Redis session with REPL info
+      if (!existingSession) {
+        await withSpan("redis.createSession", async () => {
+          await redis.createSession(ctx.repo, ctx.pr, {
+            tmuxWindow: replResult.session.tmuxWindow,
+            podName: process.env.POD_NAME || "gwa-runner-0",
+            worktreePath,
+            createdAt: Date.now(),
+            status: "active",
+          });
+          Metrics.recordRedisOperation("createSession", true);
+          Metrics.sessionStarted();
+        });
+      } else {
+        await redis.touchSession(ctx.repo, ctx.pr);
+      }
+
+      // Generate and post REPL start comment
+      const comment = await generateComment({
+        type: "repl_start",
+        sessionId: replResult.session.sessionId,
+        kubectlAttachCommand: replResult.kubectlAttachCommand,
+        tmuxAttachCommand: replResult.tmuxAttachCommand,
+        prNumber: ctx.pr,
+        trigger: ctx.trigger,
+      });
+
+      await github.postPRComment(ctx.owner, ctx.repoName, ctx.pr, comment.body);
+      Metrics.recordGitHubApiCall("postPRComment", true);
+
+      log("info", "REPL session started, orchestrator exiting", {
+        sessionId: replResult.session.sessionId,
+        tmuxWindow: replResult.session.tmuxWindow,
+      });
+
+      // REPL mode: Orchestrator exits here. Claude runs in background.
+      // Claude will call ask-question and session-complete tools as needed.
+    },
+    { attributes: { "repl.operation": "execute" } }
+  );
+}
+
+/**
+ * Execute in headless mode: Run Claude and wait for completion.
+ * Orchestrator handles questions and posts completion comment.
+ */
+async function executeHeadlessMode(
+  ctx: PRContext,
+  worktreePath: string,
+  prompt: string,
+  existingSession: Awaited<ReturnType<typeof redis.getSession>>
+): Promise<void> {
+  // Create tmux window for headless mode
   let tmuxWindow: number;
 
-  if (session) {
-    log("debug", `Found existing session in window ${session.tmuxWindow}`);
-    tmuxWindow = session.tmuxWindow;
+  if (existingSession) {
+    log("debug", `Found existing session in window ${existingSession.tmuxWindow}`);
+    tmuxWindow = existingSession.tmuxWindow;
     await redis.touchSession(ctx.repo, ctx.pr);
 
     // Verify window still exists
     if (!(await tmux.windowExists(tmuxWindow))) {
       log("debug", "Window gone, recreating");
-      tmuxWindow = await tmux.createWindow(`pr-${ctx.pr}`, worktreePath!);
+      tmuxWindow = await tmux.createWindow(`pr-${ctx.pr}`, worktreePath);
       await redis.updateSessionStatus(ctx.repo, ctx.pr, "active");
     }
   } else {
     log("debug", "Creating new session");
-    tmuxWindow = await tmux.createWindow(`pr-${ctx.pr}`, worktreePath!);
+    tmuxWindow = await tmux.createWindow(`pr-${ctx.pr}`, worktreePath);
 
     await withSpan("redis.createSession", async () => {
       await redis.createSession(ctx.repo, ctx.pr, {
         tmuxWindow,
         podName: process.env.POD_NAME || "gwa-runner-0",
-        worktreePath: worktreePath!,
+        worktreePath,
         createdAt: Date.now(),
         status: "active",
       });
@@ -186,18 +353,15 @@ async function orchestrate(ctx: PRContext): Promise<void> {
     });
   }
 
-  // 5. Build prompt based on trigger
-  const prompt = buildPrompt(ctx);
-  log("debug", "Built prompt", { promptLength: prompt.length });
-
-  // 6. Run Claude
   await withSpan(
-    "claude.run",
+    "headless.execute",
     async (span) => {
-      span.setAttribute("claude.continueSession", !!session);
-      log("info", "Running Claude", {
-        continueSession: !!session,
-        workingDir: worktreePath!,
+      span.setAttribute("headless.continue_session", !!existingSession);
+      span.setAttribute("headless.working_dir", worktreePath);
+
+      log("info", "Running Claude in headless mode", {
+        continueSession: !!existingSession,
+        workingDir: worktreePath,
       });
 
       await redis.updateSessionStatus(ctx.repo, ctx.pr, "active");
@@ -205,8 +369,8 @@ async function orchestrate(ctx: PRContext): Promise<void> {
       const claudeStartTime = Date.now();
       const result = await claude.runClaude({
         prompt,
-        workingDir: worktreePath!,
-        continueSession: !!session,
+        workingDir: worktreePath,
+        continueSession: !!existingSession,
       });
       const claudeDuration = Date.now() - claudeStartTime;
 
@@ -222,12 +386,12 @@ async function orchestrate(ctx: PRContext): Promise<void> {
         outcome = "error";
       }
 
-      span.setAttribute("claude.outcome", outcome);
-      span.setAttribute("claude.durationMs", claudeDuration);
-      Metrics.recordClaudeInvocation(outcome, !!session);
+      span.setAttribute("headless.outcome", outcome);
+      span.setAttribute("headless.duration_ms", claudeDuration);
+      Metrics.recordClaudeInvocation(outcome, !!existingSession);
       Metrics.recordClaudeDuration(claudeDuration, outcome);
 
-      // 7. Handle result
+      // Handle result
       if (result.askedQuestion) {
         log("info", "Claude asked a question", { pr: ctx.pr });
         await redis.updateSessionStatus(ctx.repo, ctx.pr, "waiting");
@@ -243,14 +407,22 @@ async function orchestrate(ctx: PRContext): Promise<void> {
       } else if (result.success) {
         log("info", "Claude completed successfully", { pr: ctx.pr });
         await redis.updateSessionStatus(ctx.repo, ctx.pr, "completed");
-        await github.postWorkComplete(
-          ctx.owner,
-          ctx.repoName,
-          ctx.pr,
-          "Work completed",
-          result.output.slice(-2000)
-        );
-        Metrics.recordGitHubApiCall("postWorkComplete", true);
+
+        // Use smart comment generator for completion
+        const comment = await generateComment({
+          type: "headless_complete",
+          output: result.output,
+          prNumber: ctx.pr,
+          trigger: ctx.trigger,
+        });
+
+        await github.postPRComment(ctx.owner, ctx.repoName, ctx.pr, comment.body);
+        Metrics.recordGitHubApiCall("postPRComment", true);
+
+        if (comment.usedAI) {
+          log("debug", "Used AI summarization for completion comment");
+        }
+
         Metrics.sessionEnded();
       } else {
         log("error", "Claude encountered an error", {
@@ -258,18 +430,21 @@ async function orchestrate(ctx: PRContext): Promise<void> {
           error: result.error || "Unknown error",
         });
         await redis.updateSessionStatus(ctx.repo, ctx.pr, "error");
-        await github.postError(
-          ctx.owner,
-          ctx.repoName,
-          ctx.pr,
-          result.error || "Unknown error",
-          result.output.slice(-2000)
-        );
-        Metrics.recordGitHubApiCall("postError", true);
+
+        // Use smart comment generator for error
+        const comment = await generateComment({
+          type: "error",
+          error: result.error || "Unknown error",
+          context: result.output.slice(-2000),
+          prNumber: ctx.pr,
+        });
+
+        await github.postPRComment(ctx.owner, ctx.repoName, ctx.pr, comment.body);
+        Metrics.recordGitHubApiCall("postPRComment", true);
         Metrics.sessionEnded();
       }
     },
-    { attributes: { "claude.operation": "runClaude" } }
+    { attributes: { "headless.operation": "execute" } }
   );
 }
 

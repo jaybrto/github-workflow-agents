@@ -83,7 +83,7 @@ export async function postPRComment(
   repo: string,
   pr: number,
   body: string
-): Promise<void> {
+): Promise<{ id: number }> {
   return withSpan(
     "github.issues.createComment",
     async (span) => {
@@ -95,14 +95,17 @@ export async function postPRComment(
       span.setAttribute("http.url", `https://api.github.com/repos/${owner}/${repo}/issues/${pr}/comments`);
 
       const client = getOctokit();
-      await client.issues.createComment({
+      const { data } = await client.issues.createComment({
         owner,
         repo,
         issue_number: pr,
         body,
       });
 
+      span.setAttribute("github.comment.id", data.id);
       Metrics.recordGitHubApiCall("issues.createComment", true);
+
+      return { id: data.id };
     }
   );
 }
@@ -157,4 +160,47 @@ export async function postError(
   body += `\n\n*You can retry by commenting \`@claude\` on this PR.*`;
 
   await postPRComment(owner, repo, pr, body);
+}
+
+export interface DiffStats {
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+}
+
+export async function getPRDiffStats(
+  owner: string,
+  repo: string,
+  pr: number
+): Promise<DiffStats> {
+  return withSpan(
+    "github.pulls.get.diff_stats",
+    async (span) => {
+      span.setAttribute("github.owner", owner);
+      span.setAttribute("github.repo", repo);
+      span.setAttribute("github.pr", pr);
+      span.setAttribute("http.method", "GET");
+      span.setAttribute("http.url", `https://api.github.com/repos/${owner}/${repo}/pulls/${pr}`);
+
+      const client = getOctokit();
+      const { data } = await client.pulls.get({
+        owner,
+        repo,
+        pull_number: pr,
+      });
+
+      const stats: DiffStats = {
+        additions: data.additions || 0,
+        deletions: data.deletions || 0,
+        changedFiles: data.changed_files || 0,
+      };
+
+      span.setAttribute("github.pr.additions", stats.additions);
+      span.setAttribute("github.pr.deletions", stats.deletions);
+      span.setAttribute("github.pr.changed_files", stats.changedFiles);
+      Metrics.recordGitHubApiCall("pulls.get.diff_stats", true);
+
+      return stats;
+    }
+  );
 }

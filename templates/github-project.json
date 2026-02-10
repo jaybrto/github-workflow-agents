@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GitHub Project Template",
+  "description": "Template for creating GitHub Projects v2 for GWA-enabled repositories",
+  "version": "1.0.0",
+
+  "project": {
+    "title": "{{REPO_NAME}} - Claude Workflow",
+    "description": "Automated issue processing and PR management powered by Claude Code",
+    "public": false
+  },
+
+  "columns": [
+    {
+      "name": "Todo",
+      "description": "Issues waiting to be processed",
+      "color": "gray"
+    },
+    {
+      "name": "Planning",
+      "description": "Claude is creating an implementation plan",
+      "color": "purple"
+    },
+    {
+      "name": "In Progress",
+      "description": "Plan approved, implementation underway",
+      "color": "blue"
+    },
+    {
+      "name": "QA",
+      "description": "Automated testing in progress",
+      "color": "yellow"
+    },
+    {
+      "name": "Blocked",
+      "description": "Waiting for human input or external dependency",
+      "color": "red"
+    },
+    {
+      "name": "Review",
+      "description": "Ready for human code review",
+      "color": "orange"
+    },
+    {
+      "name": "Done",
+      "description": "Completed and merged",
+      "color": "green"
+    }
+  ],
+
+  "customFields": [
+    {
+      "name": "Estimated Hours",
+      "dataType": "NUMBER",
+      "description": "Estimated implementation time in hours"
+    },
+    {
+      "name": "Complexity",
+      "dataType": "SINGLE_SELECT",
+      "description": "Task complexity level",
+      "options": ["Low", "Medium", "High", "Critical"]
+    },
+    {
+      "name": "Risk Level",
+      "dataType": "SINGLE_SELECT",
+      "description": "Risk assessment",
+      "options": ["Low", "Medium", "High"]
+    },
+    {
+      "name": "Assigned Agent",
+      "dataType": "TEXT",
+      "description": "Name of the Claude agent handling this item"
+    },
+    {
+      "name": "Session ID",
+      "dataType": "TEXT",
+      "description": "GWA session identifier (e.g., issue-42)"
+    },
+    {
+      "name": "Plan Version",
+      "dataType": "TEXT",
+      "description": "Version of the implementation plan"
+    },
+    {
+      "name": "Plan Status",
+      "dataType": "SINGLE_SELECT",
+      "description": "Status of the implementation plan",
+      "options": ["Draft", "Pending Review", "Approved", "In Progress", "Completed"]
+    },
+    {
+      "name": "Tasks Count",
+      "dataType": "NUMBER",
+      "description": "Total number of tasks in the plan"
+    },
+    {
+      "name": "Tasks Completed",
+      "dataType": "NUMBER",
+      "description": "Number of completed tasks"
+    },
+    {
+      "name": "Blocked Reason",
+      "dataType": "TEXT",
+      "description": "Why the item is blocked"
+    },
+    {
+      "name": "QA Status",
+      "dataType": "SINGLE_SELECT",
+      "description": "Status of automated testing",
+      "options": ["Not Started", "Running", "Passed", "Failed"]
+    },
+    {
+      "name": "QA Run ID",
+      "dataType": "TEXT",
+      "description": "Identifier for the QA test run"
+    },
+    {
+      "name": "Branch Name",
+      "dataType": "TEXT",
+      "description": "Git branch name (e.g., claude/issue-42)"
+    },
+    {
+      "name": "PR Number",
+      "dataType": "NUMBER",
+      "description": "Associated pull request number"
+    },
+    {
+      "name": "Created By",
+      "dataType": "TEXT",
+      "description": "Who created this item (human or claude)"
+    },
+    {
+      "name": "Started At",
+      "dataType": "DATE",
+      "description": "When work started on this item"
+    },
+    {
+      "name": "Completed At",
+      "dataType": "DATE",
+      "description": "When work completed on this item"
+    },
+    {
+      "name": "Duration Hours",
+      "dataType": "NUMBER",
+      "description": "Actual time spent in hours"
+    }
+  ],
+
+  "automations": [
+    {
+      "name": "Auto-add labeled issues",
+      "trigger": "issue_labeled",
+      "condition": "label == 'claude'",
+      "action": "add_to_project",
+      "targetColumn": "Todo"
+    },
+    {
+      "name": "Move to Done on PR merge",
+      "trigger": "pull_request_merged",
+      "condition": "linked_to_project_item",
+      "action": "move_to_column",
+      "targetColumn": "Done"
+    }
+  ],
+
+  "views": [
+    {
+      "name": "Board",
+      "type": "board",
+      "groupBy": "Status",
+      "default": true
+    },
+    {
+      "name": "Active Work",
+      "type": "table",
+      "filter": "Status != Done",
+      "columns": ["Title", "Status", "Assigned Agent", "Estimated Hours", "Tasks Completed"]
+    },
+    {
+      "name": "Blocked Items",
+      "type": "table",
+      "filter": "Status == Blocked",
+      "columns": ["Title", "Blocked Reason", "Session ID", "Assigned Agent"]
+    },
+    {
+      "name": "QA Pipeline",
+      "type": "table",
+      "filter": "Status == QA",
+      "columns": ["Title", "QA Status", "QA Run ID", "PR Number"]
+    }
+  ]
+}

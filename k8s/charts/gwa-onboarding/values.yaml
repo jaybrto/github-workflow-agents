@@ -1,0 +1,31 @@
+---
+# Default values for gwa-onboarding
+
+# Repository to onboard (required)
+# Format: organization/repository-name
+repository: ""
+
+# Organization name (extracted from repository)
+organization: ""
+
+# Repository name without org (extracted from repository)
+repositoryName: ""
+
+# Optional: Existing project number to use instead of creating new
+projectNumber: null
+
+# Container image
+image:
+  repository: ghcr.io/jaybrto/github-workflow-agents
+  tag: latest
+  pullPolicy: Always
+
+# Kubernetes secret containing GITHUB_TOKEN
+secretName: gwa-secrets
+
+# ServiceAccount for the job
+serviceAccount: gwa-onboarding
+
+# OpenTelemetry configuration
+otlp:
+  endpoint: http://alloy.alloy.svc.cluster.local:4317

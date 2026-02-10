@@ -1,0 +1,151 @@
+---
+name: GWA Project Sync
+
+# Triggers on GitHub Project item column changes
+# Requires: PAT with 'project' scope stored as GWA_PROJECT_TOKEN secret
+"on":
+  workflow_dispatch:
+    inputs:
+      item_id:
+        description: "Project item node ID"
+        required: true
+      issue_number:
+        description: "Issue number"
+        required: true
+      from_column:
+        description: "Previous column name"
+        required: true
+      to_column:
+        description: "New column name"
+        required: true
+
+  # Note: GitHub Projects v2 doesn't emit webhook events for column changes
+  # This workflow is triggered by an external listener or scheduled sync
+  schedule:
+    # Run every 5 minutes to check for column changes
+    - cron: "*/5 * * * *"
+
+env:
+  POD: gwa-runner-0
+  PROJECT_NUMBER: 1
+
+jobs:
+  # Job 1: Detect column changes (for scheduled runs)
+  detect-changes:
+    if: github.event_name == 'schedule'
+    runs-on: self-hosted
+    outputs:
+      changes: ${{ steps.detect.outputs.changes }}
+    steps:
+      - name: Detect project column changes
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.GWA_PROJECT_TOKEN }}
+        run: |
+          # Query project items and compare with cached state
+          # This is a simplified version - full implementation would use
+          # a persistent cache (Redis/SQLite) to track previous states
+
+          OWNER="${{ github.repository_owner }}"
+
+          # Get all project items with their current status
+          ITEMS=$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              organization(login: $owner) {
+                projectV2(number: $number) {
+                  items(first: 100) {
+                    nodes {
+                      id
+                      fieldValues(first: 10) {
+                        nodes {
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
+                            field { ... on ProjectV2SingleSelectField { name } }
+                          }
+                        }
+                      }
+                      content {
+                        ... on Issue {
+                          number
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ' -f owner="$OWNER" -F number="$PROJECT_NUMBER" 2>/dev/null || echo '{}')
+
+          # For now, output empty changes - full implementation would
+          # compare with cached state and emit actual changes
+          echo "changes=[]" >> "$GITHUB_OUTPUT"
+
+  # Job 2: Handle column transitions
+  handle-transition:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: self-hosted
+    steps:
+      - name: Log transition
+        run: |
+          echo "Project item transition detected:"
+          echo "  Item ID: ${{ github.event.inputs.item_id }}"
+          echo "  Issue: #${{ github.event.inputs.issue_number }}"
+          echo "  From: ${{ github.event.inputs.from_column }}"
+          echo "  To: ${{ github.event.inputs.to_column }}"
+
+      - name: Handle Planning transition
+        if: github.event.inputs.to_column == 'Planning'
+        run: |
+          echo "Starting planning phase for issue #${{ github.event.inputs.issue_number }}"
+
+          # Planning: Create session, spawn architect agent
+          kubectl exec "$POD" -- gwa-architect \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.repository }}" \
+            --phase planning
+
+      - name: Handle In Progress transition
+        if: github.event.inputs.to_column == 'In Progress'
+        run: |
+          echo "Starting implementation for issue #${{ github.event.inputs.issue_number }}"
+
+          # In Progress: Plan approved, spawn workers
+          kubectl exec "$POD" -- gwa-architect \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.repository }}" \
+            --phase implementation
+
+      - name: Handle QA transition
+        if: github.event.inputs.to_column == 'QA'
+        run: |
+          echo "Starting QA for issue #${{ github.event.inputs.issue_number }}"
+
+          # QA: Run Playwright e2e tests
+          # For now, just log - full implementation would trigger test suite
+          echo "Would trigger Playwright e2e tests here"
+
+      - name: Handle Review transition
+        if: github.event.inputs.to_column == 'Review'
+        run: |
+          echo "Ready for human review: issue #${{ github.event.inputs.issue_number }}"
+
+          # Review: Pause session, notify for human review
+          # Full implementation would post summary comment
+
+      - name: Handle Done transition
+        if: github.event.inputs.to_column == 'Done'
+        run: |
+          echo "Completing issue #${{ github.event.inputs.issue_number }}"
+
+          # Done: Destroy session, cleanup resources
+          kubectl exec "$POD" -- gwa-cleanup \
+            --session "issue-${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.repository }}"
+
+      - name: Handle Blocked transition
+        if: github.event.inputs.to_column == 'Blocked'
+        run: |
+          echo "Issue #${{ github.event.inputs.issue_number }} is blocked"
+
+          # Blocked: Pause session, await unblock
+          # Full implementation would update project item with blocked reason

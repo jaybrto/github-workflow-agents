@@ -4,15 +4,21 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "bun run build:orchestrate && bun run build:respond && bun run build:cleanup && bun run build:debug-redis && bun run build:health-check",
+    "build": "bun run build:orchestrate && bun run build:respond && bun run build:cleanup && bun run build:debug-redis && bun run build:health-check && bun run build:ask-question && bun run build:session-complete && bun run build:architect && bun run build:worker && bun run build:setup-project",
     "build:orchestrate": "bun build src/orchestrate.ts --compile --outfile dist/gwa-orchestrate",
     "build:respond": "bun build src/respond.ts --compile --outfile dist/gwa-respond",
     "build:cleanup": "bun build src/cleanup.ts --compile --outfile dist/gwa-cleanup",
     "build:debug-redis": "bun build src/debug-redis.ts --compile --outfile dist/gwa-debug-redis",
     "build:health-check": "bun build src/health-check.ts --compile --outfile dist/gwa-health-check",
+    "build:ask-question": "bun build src/ask-question.ts --compile --outfile dist/gwa-ask-question",
+    "build:session-complete": "bun build src/session-complete.ts --compile --outfile dist/gwa-session-complete",
+    "build:architect": "bun build src/architect.ts --compile --outfile dist/gwa-architect",
+    "build:worker": "bun build src/worker.ts --compile --outfile dist/gwa-worker",
+    "build:setup-project": "bun build src/setup-project.ts --compile --outfile dist/gwa-setup-project",
     "test": "bun test"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
     "@grpc/grpc-js": "^1.14.3",
     "@kubernetes/client-node": "^0.21.0",
     "@octokit/rest": "^21.0.0",

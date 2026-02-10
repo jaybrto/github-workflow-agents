@@ -58,10 +58,10 @@ spec:
             # Application config
             - name: REPO
               value: "jaybrto/github-workflow-agents"
-            - name: REDIS_HOST
-              value: "redis-haproxy.redis-system.svc.cluster.local"
-            - name: REDIS_PORT
-              value: "6379"
+            - name: DB_PATH
+              value: "/home/runner/.claude/gwa.db"
+            - name: SCHEMA_PATH
+              value: "/home/runner/.claude/schema.sql"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
