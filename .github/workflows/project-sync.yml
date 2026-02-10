@@ -47,7 +47,7 @@ name: GWA Project Sync
 env:
   POD: gwa-runner-0
   PROJECT_NUMBER: 1
-  GWA_BIN: /home/runner/bin
+  GWA_BIN: /usr/local/bin
 
 jobs:
   # Job 1: Detect column changes (for scheduled runs)
