@@ -3,16 +3,22 @@
 import { withSpan, Metrics, shutdown as shutdownTelemetry, log } from "./lib/telemetry.js";
 
 import { parseArgs } from "util";
-import type { RespondArgs } from "./lib/types.js";
-import * as redis from "./lib/redis.js";
 import * as github from "./lib/github.js";
-import * as claude from "./lib/claude.js";
+import * as db from "./lib/db.js";
+import * as tmux from "./lib/tmux.js";
+
+interface RespondArgs {
+  issue: number;
+  repo: string;
+  comment?: string;
+  actor?: string;
+}
 
 async function main() {
   const { values } = parseArgs({
     args: Bun.argv.slice(2),
     options: {
-      pr: { type: "string" },
+      issue: { type: "string" },
       repo: { type: "string" },
       comment: { type: "string" },
       actor: { type: "string" },
@@ -20,15 +26,15 @@ async function main() {
   });
 
   const args: RespondArgs = {
-    pr: parseInt(values.pr || "0", 10),
+    issue: parseInt(values.issue || "0", 10),
     repo: values.repo || "",
-    comment: values.comment || "",
+    comment: values.comment,
     actor: values.actor || "unknown",
   };
 
-  if (!args.pr || !args.repo || !args.comment) {
+  if (!args.issue || !args.repo) {
     console.error(
-      "Usage: gwa-respond --pr <number> --repo <owner/repo> --comment <text>"
+      "Usage: gwa-respond --issue <number> --repo <owner/repo> [--comment <text>] [--actor <username>]"
     );
     await shutdownTelemetry();
     process.exit(1);
@@ -38,16 +44,19 @@ async function main() {
   let success = false;
 
   try {
+    // Initialize database
+    db.initDatabase();
+
     await withSpan(
       "respond",
       async (span) => {
-        span.setAttribute("pr.number", args.pr);
-        span.setAttribute("pr.repo", args.repo);
-        span.setAttribute("pr.actor", args.actor);
+        span.setAttribute("issue.number", args.issue);
+        span.setAttribute("issue.repo", args.repo);
+        span.setAttribute("issue.actor", args.actor || "unknown");
 
-        log("info", `Processing answer for PR #${args.pr}`, {
+        log("info", `Processing answer for issue #${args.issue}`, {
           repo: args.repo,
-          actor: args.actor,
+          actor: args.actor || "unknown",
         });
 
         await handleResponse(args, owner, repoName);
@@ -56,28 +65,28 @@ async function main() {
       {
         attributes: {
           "gwa.operation": "respond",
-          "pr.number": args.pr,
-          "pr.repo": args.repo,
+          "issue.number": args.issue,
+          "issue.repo": args.repo,
         },
       }
     );
   } catch (error) {
     log("error", "Failed to process answer", {
       repo: args.repo,
-      pr: args.pr,
+      issue: args.issue,
       error: error instanceof Error ? error.message : String(error),
     });
 
     await github.postError(
       owner,
       repoName,
-      args.pr,
+      args.issue,
       "Failed to process answer",
       error instanceof Error ? error.message : String(error)
     );
   } finally {
-    Metrics.recordResponse(args.repo, args.pr, success);
-    await redis.closeRedis();
+    Metrics.recordResponse(args.repo, args.issue, success);
+    db.closeDatabase();
     await shutdownTelemetry();
   }
 
@@ -89,128 +98,109 @@ async function handleResponse(
   owner: string,
   repoName: string
 ): Promise<void> {
-  // Extract answer from comment
-  const match = args.comment.match(/@claude-answer:\s*(.+)/i);
-  if (!match) {
-    log("debug", "No @claude-answer: found in comment");
-    return;
-  }
-
-  const answer = match[1].trim();
-  log("info", "Extracted answer", { answerLength: answer.length });
-
-  // Store answer in Redis
-  await withSpan("redis.storeAnswer", async () => {
-    await redis.storeAnswer(args.repo, args.pr, answer, args.actor);
-    Metrics.recordRedisOperation("storeAnswer", true);
-  });
-
-  // Get session info
-  const session = await withSpan("redis.getSession", async () => {
-    const s = await redis.getSession(args.repo, args.pr);
-    Metrics.recordRedisOperation("getSession", true);
-    return s;
+  // Get session from SQLite
+  const session = await withSpan("db.getSessionByPR", async () => {
+    return db.getSessionByPR(args.repo, args.issue);
   });
 
   if (!session) {
-    log("warn", "No active session found", { pr: args.pr });
-    await github.postPRComment(
+    log("warn", "No active session found", { issue: args.issue });
+    await github.postIssueComment(
       owner,
       repoName,
-      args.pr,
-      "No active Claude session found for this PR. Comment `@claude` to start a new session."
+      args.issue,
+      "No active Claude session found for this issue. Move to 'Planning' column to start a new session."
     );
-    Metrics.recordGitHubApiCall("postPRComment", true);
+    Metrics.recordGitHubApiCall("postIssueComment", true);
     return;
   }
 
-  if (session.status !== "waiting") {
-    log("info", `Session status is ${session.status}, not waiting`);
-    await github.postPRComment(
+  // Get pending question
+  const pendingQuestion = db.getPendingQuestion(session.id);
+
+  // Extract answer from comment if provided, otherwise fetch from GitHub
+  let answer: string | undefined;
+  let answeredBy = args.actor || "unknown";
+
+  if (args.comment) {
+    // Extract answer from comment
+    const match = args.comment.match(/@claude-answer:\s*(.+)/is);
+    if (match) {
+      answer = match[1].trim();
+    }
+  } else if (pendingQuestion) {
+    // Fetch the latest answer from GitHub comments
+    const octokit = github.getOctokit();
+    const { data: comments } = await octokit.issues.listComments({
+      owner,
+      repo: repoName,
+      issue_number: args.issue,
+      since: new Date(pendingQuestion.asked_at * 1000).toISOString(),
+      per_page: 100,
+    });
+
+    // Find the most recent @claude-answer comment
+    for (const comment of comments.reverse()) {
+      const match = comment.body?.match(/@claude-answer:\s*(.+)/is);
+      if (match) {
+        answer = match[1].trim();
+        answeredBy = comment.user?.login || "unknown";
+        break;
+      }
+    }
+  }
+
+  if (!answer) {
+    log("debug", "No answer found");
+    return;
+  }
+
+  log("info", "Extracted answer", { answerLength: answer.length, answeredBy });
+
+  // Update question with answer
+  if (pendingQuestion) {
+    db.answerQuestion(pendingQuestion.id, answer, answeredBy);
+  }
+
+  if (session.status !== "blocked") {
+    log("info", `Session status is ${session.status}, not blocked`);
+    await github.postIssueComment(
       owner,
       repoName,
-      args.pr,
+      args.issue,
       `Claude is not currently waiting for input (status: ${session.status}). Your answer has been saved.`
     );
-    Metrics.recordGitHubApiCall("postPRComment", true);
+    Metrics.recordGitHubApiCall("postIssueComment", true);
     return;
   }
 
-  // Continue Claude with the answer
+  // Update session status to running
+  db.updateSessionStatus(session.id, "running");
+
+  // Resume Claude with the answer by sending to tmux window
   await withSpan(
-    "claude.continueWithAnswer",
+    "claude.resumeWithAnswer",
     async (span) => {
-      log("info", "Continuing Claude with answer", {
-        workingDir: session.worktreePath,
+      log("info", "Resuming Claude with answer", {
+        sessionId: session.id,
+        tmuxWindow: session.tmux_window ?? -1,
       });
 
-      await redis.updateSessionStatus(args.repo, args.pr, "active");
-      await redis.clearQuestion(args.repo, args.pr);
-
-      const claudeStartTime = Date.now();
-      const result = await claude.continueWithAnswer(session.worktreePath, answer);
-      const claudeDuration = Date.now() - claudeStartTime;
-
-      // Determine outcome
-      let outcome: "success" | "error" | "question" | "timeout";
-      if (result.askedQuestion) {
-        outcome = "question";
-      } else if (result.success) {
-        outcome = "success";
-      } else if (result.error?.includes("timeout")) {
-        outcome = "timeout";
-      } else {
-        outcome = "error";
+      if (session.tmux_window === null) {
+        throw new Error("Session has no tmux window");
       }
 
-      span.setAttribute("claude.outcome", outcome);
-      span.setAttribute("claude.durationMs", claudeDuration);
-      Metrics.recordClaudeInvocation(outcome, true);
-      Metrics.recordClaudeDuration(claudeDuration, outcome);
+      // Send the answer to the Claude REPL
+      await tmux.sendCommand(session.tmux_window, answer!);
 
-      // Handle result
-      if (result.askedQuestion) {
-        log("info", "Claude asked another question", { pr: args.pr });
-        await redis.updateSessionStatus(args.repo, args.pr, "waiting");
-        await redis.storeQuestion(args.repo, args.pr, result.askedQuestion);
-        await github.postQuestion(
-          owner,
-          repoName,
-          args.pr,
-          result.askedQuestion,
-          result.output.slice(-500)
-        );
-        Metrics.recordGitHubApiCall("postQuestion", true);
-      } else if (result.success) {
-        log("info", "Claude completed successfully", { pr: args.pr });
-        await redis.updateSessionStatus(args.repo, args.pr, "completed");
-        await github.postWorkComplete(
-          owner,
-          repoName,
-          args.pr,
-          "Work completed after receiving your answer",
-          result.output.slice(-2000)
-        );
-        Metrics.recordGitHubApiCall("postWorkComplete", true);
-        Metrics.sessionEnded();
-      } else {
-        log("error", "Claude encountered an error", {
-          pr: args.pr,
-          error: result.error || "Unknown error",
-        });
-        await redis.updateSessionStatus(args.repo, args.pr, "error");
-        await github.postError(
-          owner,
-          repoName,
-          args.pr,
-          result.error || "Unknown error",
-          result.output.slice(-2000)
-        );
-        Metrics.recordGitHubApiCall("postError", true);
-        Metrics.sessionEnded();
-      }
+      db.logActivity(session.id, "answer_sent", { answeredBy, answerLength: answer!.length }, answeredBy);
+
+      span.setAttribute("claude.sessionId", session.id);
+      Metrics.recordClaudeInvocation("success", true);
+
+      log("info", "Answer sent to Claude", { sessionId: session.id });
     },
-    { attributes: { "claude.operation": "continueWithAnswer" } }
+    { attributes: { "claude.operation": "resumeWithAnswer" } }
   );
 }
 

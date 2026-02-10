@@ -162,6 +162,18 @@ export async function postError(
   await postPRComment(owner, repo, pr, body);
 }
 
+/**
+ * Post a comment on an issue (alias for postPRComment since GitHub treats them the same).
+ */
+export async function postIssueComment(
+  owner: string,
+  repo: string,
+  issueNumber: number,
+  body: string
+): Promise<{ id: number }> {
+  return postPRComment(owner, repo, issueNumber, body);
+}
+
 export interface DiffStats {
   additions: number;
   deletions: number;

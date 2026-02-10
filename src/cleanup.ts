@@ -3,30 +3,38 @@
 import { withSpan, Metrics, shutdown as shutdownTelemetry, log } from "./lib/telemetry.js";
 
 import { parseArgs } from "util";
-import type { CleanupArgs } from "./lib/types.js";
-import * as redis from "./lib/redis.js";
 import * as github from "./lib/github.js";
 import * as tmux from "./lib/tmux.js";
 import * as git from "./lib/git.js";
+import * as db from "./lib/db.js";
+
+interface CleanupArgs {
+  repo: string;
+  session?: string;
+  reason?: string;
+  dryRun: boolean;
+}
 
 async function main() {
   const { values } = parseArgs({
     args: Bun.argv.slice(2),
     options: {
       repo: { type: "string" },
-      pod: { type: "string" },
+      session: { type: "string" },
+      reason: { type: "string" },
       "dry-run": { type: "boolean" },
     },
   });
 
   const args: CleanupArgs = {
     repo: values.repo || "",
-    pod: values.pod || "gwa-runner-0",
+    session: values.session,
+    reason: values.reason || "cleanup",
     dryRun: values["dry-run"] || false,
   };
 
   if (!args.repo) {
-    console.error("Usage: gwa-cleanup --repo <owner/repo> [--pod <pod>] [--dry-run]");
+    console.error("Usage: gwa-cleanup --repo <owner/repo> [--session <id>] [--reason <reason>] [--dry-run]");
     await shutdownTelemetry();
     process.exit(1);
   }
@@ -35,23 +43,33 @@ async function main() {
   let cleanedCount = 0;
 
   try {
+    // Initialize database
+    db.initDatabase();
+
     cleanedCount = await withSpan(
       "cleanup",
       async (span) => {
         span.setAttribute("cleanup.repo", args.repo);
-        span.setAttribute("cleanup.dryRun", args.dryRun ?? false);
+        span.setAttribute("cleanup.dryRun", args.dryRun);
 
         log("info", `Starting cleanup for ${args.repo}`, {
-          dryRun: args.dryRun ?? false,
+          dryRun: args.dryRun,
+          session: args.session || "all",
         });
 
-        return await cleanup(args, owner, repoName);
+        if (args.session) {
+          // Clean up specific session
+          return await cleanupSession(args, owner, repoName);
+        } else {
+          // Clean up all closed sessions
+          return await cleanupClosedSessions(args, owner, repoName);
+        }
       },
       {
         attributes: {
           "gwa.operation": "cleanup",
           "cleanup.repo": args.repo,
-          "cleanup.dryRun": args.dryRun ?? false,
+          "cleanup.dryRun": args.dryRun,
         },
       }
     );
@@ -62,111 +80,181 @@ async function main() {
     });
   } finally {
     Metrics.recordCleanup(args.repo, cleanedCount);
-    await redis.closeRedis();
+    db.closeDatabase();
     await shutdownTelemetry();
   }
 
   process.exit(0);
 }
 
-async function cleanup(
+/**
+ * Clean up a specific session by ID.
+ */
+async function cleanupSession(
   args: CleanupArgs,
   owner: string,
   repoName: string
 ): Promise<number> {
-  // Get all PR keys from Redis
-  const allKeys = await withSpan("redis.getAllPRKeys", async () => {
-    const keys = await redis.getAllPRKeys();
-    Metrics.recordRedisOperation("getAllPRKeys", true);
-    return keys;
-  });
+  const session = db.getSession(args.session!);
 
-  log("info", `Found ${allKeys.length} PR keys in Redis`);
+  if (!session) {
+    log("warn", `Session not found: ${args.session}`);
+    return 0;
+  }
 
-  // Filter to keys matching our repo
-  const repoPattern = `pr:${args.repo}:`;
-  const prKeys = allKeys.filter(
-    (key) => key.startsWith(repoPattern) && !key.includes(":question")
+  if (args.dryRun) {
+    log("info", `[DRY RUN] Would clean up session ${args.session}`, {
+      tmuxWindow: session.tmux_window ?? -1,
+      worktreePath: session.worktree_path ?? "unknown",
+      status: session.status,
+    });
+    return 1;
+  }
+
+  await withSpan(
+    "cleanupSession",
+    async (span) => {
+      span.setAttribute("session.id", session.id);
+
+      // Clean up tmux window
+      if (session.tmux_window !== null && (await tmux.windowExists(session.tmux_window))) {
+        try {
+          await tmux.killWindow(session.tmux_window);
+          log("debug", `Removed tmux window ${session.tmux_window}`);
+        } catch (error) {
+          log("warn", `Failed to remove tmux window: ${error}`);
+        }
+      }
+
+      // Clean up git worktree
+      if (session.worktree_path) {
+        try {
+          await git.removeWorktree(session.github_number);
+          log("debug", `Removed worktree for session ${session.id}`);
+        } catch (error) {
+          log("warn", `Failed to remove worktree: ${error}`);
+        }
+      }
+
+      // Update session status
+      db.updateSessionStatus(session.id, "complete", {
+        completion_summary: `Cleaned up: ${args.reason}`,
+      });
+
+      db.logActivity(session.id, "session_cleanup", { reason: args.reason }, "workflow");
+
+      Metrics.sessionEnded();
+      log("info", `Cleaned up session ${session.id}`);
+    },
+    { attributes: { "cleanup.session": session.id } }
   );
 
-  log("info", `${prKeys.length} keys match repo ${args.repo}`);
+  return 1;
+}
+
+/**
+ * Clean up all sessions for closed issues/PRs.
+ */
+async function cleanupClosedSessions(
+  args: CleanupArgs,
+  owner: string,
+  repoName: string
+): Promise<number> {
+  // Get all active sessions for this repo from SQLite
+  const database = db.getDatabase();
+  const sessions = database
+    .query(
+      `SELECT * FROM sessions
+       WHERE repo = ?
+       AND status IN ('running', 'blocked', 'starting', 'pending')
+       ORDER BY created_at`
+    )
+    .all(args.repo) as db.Session[];
+
+  log("info", `Found ${sessions.length} active sessions for ${args.repo}`);
 
   let cleaned = 0;
   let skipped = 0;
 
-  for (const key of prKeys) {
-    // Extract PR number from key: pr:owner/repo:123
-    const parts = key.split(":");
-    const prNum = parseInt(parts[parts.length - 1], 10);
+  for (const session of sessions) {
+    const issueNumber = session.github_number;
 
-    if (isNaN(prNum)) {
-      log("debug", `Skipping invalid key: ${key}`);
-      skipped++;
-      continue;
-    }
-
-    // Check if PR is still open
+    // Check if issue/PR is still open
     const isOpen = await withSpan(
-      "github.isPROpen",
+      "github.isIssueOpen",
       async () => {
-        const open = await github.isPROpen(owner, repoName, prNum);
-        Metrics.recordGitHubApiCall("isPROpen", true);
-        return open;
+        try {
+          if (session.github_type === "pull_request") {
+            return await github.isPROpen(owner, repoName, issueNumber);
+          } else {
+            const octokit = github.getOctokit();
+            const { data: issue } = await octokit.issues.get({
+              owner,
+              repo: repoName,
+              issue_number: issueNumber,
+            });
+            return issue.state === "open";
+          }
+        } catch {
+          // If we can't fetch, assume it's closed
+          return false;
+        }
       },
-      { attributes: { "pr.number": prNum } }
+      { attributes: { "issue.number": issueNumber } }
     );
 
     if (isOpen) {
-      log("debug", `PR #${prNum} is still open, skipping`);
+      log("debug", `#${issueNumber} is still open, skipping`);
       skipped++;
       continue;
     }
 
-    log("info", `PR #${prNum} is closed, cleaning up`);
-
-    // Get session data before deleting
-    const session = await redis.getSession(args.repo, prNum);
+    log("info", `#${issueNumber} is closed, cleaning up session ${session.id}`);
 
     if (args.dryRun) {
-      log("info", `[DRY RUN] Would clean up PR #${prNum}`, {
-        tmuxWindow: session?.tmuxWindow ?? -1,
-        worktreePath: session?.worktreePath ?? "unknown",
+      log("info", `[DRY RUN] Would clean up session ${session.id}`, {
+        tmuxWindow: session.tmux_window ?? -1,
+        worktreePath: session.worktree_path ?? "unknown",
       });
       cleaned++;
       continue;
     }
 
     await withSpan(
-      "cleanupPR",
+      "cleanupSession",
       async (span) => {
-        span.setAttribute("pr.number", prNum);
+        span.setAttribute("session.id", session.id);
 
         // Clean up tmux window
-        if (session && (await tmux.windowExists(session.tmuxWindow))) {
+        if (session.tmux_window !== null && (await tmux.windowExists(session.tmux_window))) {
           try {
-            await tmux.killWindow(session.tmuxWindow);
-            log("debug", `Removed tmux window ${session.tmuxWindow}`);
+            await tmux.killWindow(session.tmux_window);
+            log("debug", `Removed tmux window ${session.tmux_window}`);
           } catch (error) {
             log("warn", `Failed to remove tmux window: ${error}`);
           }
         }
 
         // Clean up git worktree
-        try {
-          await git.removeWorktree(prNum);
-          log("debug", `Removed worktree for PR #${prNum}`);
-        } catch (error) {
-          log("warn", `Failed to remove worktree: ${error}`);
+        if (session.worktree_path) {
+          try {
+            await git.removeWorktree(session.github_number);
+            log("debug", `Removed worktree for session ${session.id}`);
+          } catch (error) {
+            log("warn", `Failed to remove worktree: ${error}`);
+          }
         }
 
-        // Clean up Redis
-        await redis.deletePRData(args.repo, prNum);
-        Metrics.recordRedisOperation("deletePRData", true);
-        log("debug", `Deleted Redis data for PR #${prNum}`);
+        // Update session status
+        db.updateSessionStatus(session.id, "complete", {
+          completion_summary: "Cleaned up: issue/PR closed",
+        });
+
+        db.logActivity(session.id, "session_cleanup", { reason: "issue_closed" }, "workflow");
 
         Metrics.sessionEnded();
       },
-      { attributes: { "cleanup.pr": prNum } }
+      { attributes: { "cleanup.session": session.id } }
     );
 
     cleaned++;

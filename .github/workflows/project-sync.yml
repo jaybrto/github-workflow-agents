@@ -47,6 +47,7 @@ name: GWA Project Sync
 env:
   POD: gwa-runner-0
   PROJECT_NUMBER: 1
+  GWA_BIN: /home/runner/bin
 
 jobs:
   # Job 1: Detect column changes (for scheduled runs)
@@ -125,7 +126,7 @@ jobs:
         run: |
           echo "Starting planning phase for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Create session, spawn architect agent for planning
-          kubectl exec "$POD" -- gwa-architect \
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-architect" \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --phase planning
@@ -135,7 +136,7 @@ jobs:
         run: |
           echo "Starting implementation for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Plan approved, spawn worker agents for implementation
-          kubectl exec "$POD" -- gwa-architect \
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-architect" \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --phase implementation
@@ -159,7 +160,7 @@ jobs:
         run: |
           echo "Deploying and cleaning up ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Merge PR, deploy, destroy session
-          kubectl exec "$POD" -- gwa-cleanup \
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-cleanup" \
             --session "issue-${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}"
 
@@ -179,7 +180,7 @@ jobs:
         run: |
           echo "Resuming ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }} with answer"
           # Resume session with the answer from blocked state
-          kubectl exec "$POD" -- gwa-respond \
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-respond" \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}"
 
@@ -192,7 +193,7 @@ jobs:
         run: |
           echo "Resuming implementation with test failures for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Resume session with test failure context
-          kubectl exec "$POD" -- gwa-architect \
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-architect" \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --phase fix-failures
@@ -213,7 +214,7 @@ jobs:
         run: |
           echo "Returning to planning for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Reset session to planning phase
-          kubectl exec "$POD" -- gwa-architect \
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-architect" \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --phase replanning
@@ -223,7 +224,7 @@ jobs:
         run: |
           echo "Resuming implementation for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Resume existing session for more implementation work
-          kubectl exec "$POD" -- gwa-architect \
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-architect" \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --phase resume
@@ -233,7 +234,7 @@ jobs:
         run: |
           echo "Cancelling session for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Cancel and cleanup session without completion
-          kubectl exec "$POD" -- gwa-cleanup \
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-cleanup" \
             --session "issue-${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --reason cancelled
@@ -247,7 +248,7 @@ jobs:
         run: |
           echo "Reopening ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Create new session for reopened issue
-          kubectl exec "$POD" -- gwa-architect \
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-architect" \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --phase "${{ github.event.inputs.to_column == 'Planning' && 'planning' || github.event.inputs.to_column == 'In Progress' && 'implementation' || 'planning' }}"
@@ -261,7 +262,7 @@ jobs:
         run: |
           echo "Quick-starting implementation for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Skip planning, start implementation directly
-          kubectl exec "$POD" -- gwa-architect \
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-architect" \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --phase implementation \
