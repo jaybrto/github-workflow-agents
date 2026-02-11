@@ -51,21 +51,44 @@ This plan upgrades GWA from a lookup-table state machine with dual persistence t
                                         ┌──────────────────────┐
                                         │  RabbitMQ            │
                                         │  (existing K3s)      │
-                                        │  rabbitmq_web_mqtt   │
+                                        │  rabbitmq_mqtt       │
+                                        │  port 1883 (native)  │
+                                        │  + rabbitmq_web_mqtt │
                                         │  port 15675 /ws      │
                                         └──────────┬───────────┘
                                                    │
-                                                   │ Cloudflare Tunnel
-                                                   │ wss://mqtt.bto.bar/ws
-                                                   ▼
-                                        ┌──────────────────────┐
-                                        │  React Native App    │
-                                        │  (Expo Dev Build)    │
-                                        │  mqtt.js over WSS    │
-                                        │  + expo-notifications│
-                                        │  + FCM push          │
-                                        └──────────────────────┘
+                    ┌──────────────────────────────┼──────────────────┐
+                    │                              │                  │
+                    ▼ (Primary)                    ▼ (Fallback)       ▼
+         ┌────────────────────┐       ┌──────────────────┐  ┌───────────────┐
+         │ WARP + Private Net │       │ Cloudflare Tunnel│  │ Push Bridge   │
+         │ Zero Trust Gateway │       │ wss://mqtt.bto.  │  │ (sidecar)     │
+         │ 10.43.x.x:1883    │       │ bar/ws           │  │ MQTT → Expo   │
+         │ raw TCP (8hr idle) │       │ (100s timeout)   │  │ Push API      │
+         └────────┬───────────┘       └────────┬─────────┘  └───────┬───────┘
+                  │                             │                    │
+                  ▼                             ▼                    ▼
+         ┌─────────────────────────────────────────────────────────────────┐
+         │  React Native App (Expo Dev Build)                              │
+         │                                                                 │
+         │  Foreground: mqtt.js (WARP native TCP or WSS fallback)         │
+         │  Background: FCM push (process-stopping events only)           │
+         │  Resume:     Sync missed MQTT messages on foreground return    │
+         │                                                                 │
+         │  Notification throttling: grouped + debounced per-session      │
+         └─────────────────────────────────────────────────────────────────┘
 ```
+
+### Connectivity Model: WARP Primary, WSS Fallback
+
+The mobile app supports two MQTT connectivity paths:
+
+| Path | Transport | Idle Timeout | Requires | When Used |
+|------|-----------|-------------|----------|-----------|
+| **WARP (primary)** | Native TCP via private IP | **8 hours** (Gateway proxy) | Cloudflare One agent on device | WARP VPN detected active |
+| **WSS (fallback)** | WebSocket over HTTPS tunnel | **100 seconds** | Nothing extra | WARP unavailable or disconnected |
+
+The app detects WARP availability at startup by attempting a TCP connection to the private RabbitMQ IP. If reachable, it uses native MQTT (`mqtt://10.43.x.x:1883`). If not, it falls back to WSS (`wss://mqtt.bto.bar/ws`) with a 60-second keepalive.
 
 ---
 
@@ -99,12 +122,26 @@ This plan upgrades GWA from a lookup-table state machine with dual persistence t
 - **Per-subscriber queues:** Each MQTT client gets dedicated queues named `mqtt-subscription-<clientID>qos[0|1]`. Single QoS level = single queue = guaranteed FIFO ordering.
 - **Session persistence:** With `Clean Session = false`, queued messages survive client disconnects. Session expiry default is 1 day.
 
-### Cloudflare Tunnel + MQTT/WebSocket
+### Cloudflare Tunnel + MQTT/WebSocket (Fallback Path)
 
 - **100-second idle timeout.** Non-configurable on non-Enterprise plans. MQTT keepalive must be < 100 seconds. **Use 60-second keepalive.**
 - **Periodic infrastructure restarts.** Cloudflare deploys cause connection drops. **Must implement reconnection with exponential backoff.**
 - **Reports of 20-30 second unexplained drops** (cloudflared [#1282](https://github.com/cloudflare/cloudflared/issues/1282)). **Multiple cloudflared replicas mitigate this** (we already run 2).
 - **Tunnel type must be HTTP** (not TCP) for WebSocket proxying.
+
+### Cloudflare WARP + Private Network Routing (Primary Path)
+
+- **8-hour idle timeout.** When the mobile device connects via WARP to a private IP behind `cloudflared`, traffic flows through the Gateway proxy as raw TCP (Layer 4), bypassing the HTTP proxy layer entirely. The Gateway proxy's idle timeout is **8 hours**, not 100 seconds.
+- **Architecture:** Device → WARP (WireGuard) → Cloudflare Edge → Gateway Proxy → `cloudflared` → `rawTCPService` → RabbitMQ:1883. No WebSocket wrapping needed.
+- **Split tunnel configuration required.** By default, RFC 1918 space is excluded from WARP routing. Must explicitly include the K3s pod CIDR (e.g., `10.43.0.0/16`) in Split Tunnel Include mode.
+- **Gotcha: WARP on Android background.** Android may kill the WARP VPN process in background. Mitigations:
+  - Enable Android system "Always-on VPN" for Cloudflare One app
+  - Disable battery optimization for the Cloudflare One app
+  - Use the Cloudflare One agent (not legacy 1.1.1.1 app) — lower CPU usage
+  - **Still need push notifications as fallback** — WARP background is not guaranteed
+- **Gotcha: Battery impact.** WireGuard is efficient but real-world reports are mixed (some report 10% drain in 2 hours idle). Monitor and document battery optimization settings for users.
+- **Zero Trust free tier.** Supports up to 50 users, sufficient for our personal use case.
+- **Spectrum is NOT an option.** MQTT support requires Enterprise plan. Not viable for our scale/budget.
 
 ### SQLite Concurrent Writes (Bun)
 
@@ -413,34 +450,93 @@ actor.subscribe((snapshot) => {
 });
 ```
 
-### 4.5 Push Notification Bridge
+### 4.5 Push Notification Bridge (Process-Stopping Events Only)
 
 **New file:** `src/lib/push-bridge.ts`
 
-A small service (can run in the webhook pod or as a sidecar) that:
-1. Subscribes to MQTT topics `gwa/+/+/+/blocked`, `gwa/+/+/+/error`, `gwa/+/+/+/complete`
-2. On receiving a message, sends an Expo push notification via `https://exp.host/--/api/v2/push/send`
-3. Expo push tokens are stored in SQLite (registered by the mobile app via a REST endpoint)
+A sidecar service that bridges MQTT events to push notifications, but **only for events that stop a session's progress and require human intervention**:
 
-This solves the background notification problem without requiring background MQTT on the mobile app.
+**Subscribed topics (process-stopping events only):**
+- `gwa/+/+/+/blocked` — Agent asked a question, session paused until answered
+- `gwa/+/+/+/error` — Unrecoverable error, session halted
+- `gwa/+/+/+/complete` — Session finished, final result ready
 
-### 4.6 K8s Configuration
+**Explicitly NOT pushed (informational only — synced on foreground return):**
+- `state_change` — Routine state transitions (e.g., Planning → InProgress)
+- `activity` — Claude Code output, git operations, test runs
+- `screenshot` — Terminal captures
 
-Add to `k8s/gwa-runner-statefulset.yaml`:
+**Throttling strategy (critical for concurrent sessions):**
+
+Since many sessions may be running concurrently, unthrottled notifications would flood the device. The push bridge implements:
+
+1. **Per-session debounce (30 seconds).** Multiple events from the same session within 30 seconds are collapsed into a single notification. The notification body updates to reflect the latest event. E.g., if session #42 hits `blocked` then `error` within 30s, only one notification is sent with the error.
+
+2. **Global rate limit (max 5 notifications per minute).** If the rate is exceeded, queue excess notifications and deliver them in the next window. This prevents notification storms when multiple sessions hit issues simultaneously.
+
+3. **Android notification grouping.** All GWA notifications use a single group key (`gwa-alerts`) so Android collapses them into a summary notification (e.g., "3 sessions need attention") when multiple arrive close together. Each notification within the group is still individually tappable.
+
+4. **Cooldown per session (5 minutes).** After a notification is sent for a session, suppress duplicate notifications for that session for 5 minutes. This prevents repeated `error` events from the same failing session from spamming the user.
+
+5. **Batch delivery for queued notifications.** When the app returns to foreground and syncs missed MQTT messages, those messages are NOT re-pushed as notifications — the app's foreground UI handles displaying them. The push bridge only fires for events that arrive while the app is backgrounded/closed.
+
+**Implementation:**
+```typescript
+interface ThrottleState {
+  lastNotificationAt: Map<string, number>;  // sessionId → timestamp
+  windowCount: number;                       // notifications in current minute
+  windowStart: number;                       // current minute window start
+  pendingQueue: PushMessage[];               // overflow from rate limit
+}
+```
+
+The push bridge:
+1. Subscribes to MQTT process-stopping topics via `mqtt.js` (internal, no WARP needed)
+2. Applies throttle/debounce logic per above rules
+3. Sends via Expo Push API: `POST https://exp.host/--/api/v2/push/send`
+4. Expo push tokens stored in SQLite (`push_tokens` table)
+5. Handles Expo push receipts — removes invalid tokens automatically
+
+### 4.6 K8s & Network Configuration
+
+**GWA Runner env:**
 ```yaml
+# k8s/gwa-runner-statefulset.yaml
 env:
   - name: RABBITMQ_URL
     value: "amqp://rabbitmq.default.svc.cluster.local:5672"
 ```
 
-Add Cloudflare tunnel route for MQTT WebSocket:
+**Cloudflare Tunnel — WSS fallback route (public hostname):**
 ```yaml
-# In cloudflared config
+# In cloudflared config — for non-WARP clients
 - hostname: mqtt.bto.bar
   service: http://rabbitmq.default.svc.cluster.local:15675
   originRequest:
     connectTimeout: 30s
     tcpKeepAlive: 30s
+```
+
+**Cloudflare Tunnel — Private network route (WARP primary path):**
+```yaml
+# In cloudflared tunnel config — advertise K3s service CIDR
+tunnel: <tunnel-id>
+ingress:
+  # ... existing rules ...
+  # Private network routing is configured via cloudflared --network flag,
+  # not in ingress rules. Add to cloudflared deployment:
+  #   cloudflared tunnel route ip add 10.43.0.0/16 <tunnel-id>
+```
+
+**Zero Trust Dashboard configuration:**
+1. **Split Tunnels (Include mode):** Add `10.43.0.0/16` (K3s service CIDR) so WARP routes this range through the tunnel
+2. **Gateway Network Policy:** Allow TCP to `10.43.X.X:1883` (RabbitMQ MQTT) and `10.43.X.X:15672` (RabbitMQ management — for WARP health check)
+3. **Device enrollment:** Add mobile device to Zero Trust organization (free tier, max 50 users)
+
+**RabbitMQ plugins to enable:**
+```bash
+rabbitmq-plugins enable rabbitmq_mqtt         # Native MQTT on port 1883 (for WARP path)
+rabbitmq-plugins enable rabbitmq_web_mqtt     # MQTT over WebSocket on port 15675 (for WSS fallback)
 ```
 
 ---
@@ -495,19 +591,42 @@ gwa-mobile/
 └── tsconfig.json
 ```
 
-### 5.3 MQTT Client Configuration
+### 5.3 MQTT Client Configuration (Dual-Path: WARP Primary, WSS Fallback)
 
 ```typescript
 // src/mqtt/client.ts
 import mqtt from 'mqtt';
 
-const MQTT_BROKER = 'wss://mqtt.bto.bar/ws';
-const KEEPALIVE = 60;  // Under Cloudflare's 100s idle timeout
-const RECONNECT_PERIOD = 3000;  // 3 second base, with jitter
+// Dual-path connectivity
+const WARP_BROKER = 'mqtt://10.43.X.X:1883';      // Private IP via WARP (raw TCP, 8hr idle)
+const WSS_BROKER = 'wss://mqtt.bto.bar/ws';        // Public hostname (WebSocket, 100s idle)
 
-const client = mqtt.connect(MQTT_BROKER, {
+const WARP_KEEPALIVE = 300;  // 5 minutes — WARP has 8hr idle, so keepalive is relaxed
+const WSS_KEEPALIVE = 60;    // 60 seconds — must stay under Cloudflare's 100s idle timeout
+const RECONNECT_PERIOD = 3000;
+
+async function detectWarp(): Promise<boolean> {
+  // Attempt TCP connection to private RabbitMQ IP with 3s timeout
+  // If reachable, WARP is active and routing private traffic
+  try {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 3000);
+    const response = await fetch(`http://10.43.X.X:15672/api/health/checks/alarms`, {
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+const isWarp = await detectWarp();
+const brokerUrl = isWarp ? WARP_BROKER : WSS_BROKER;
+const keepalive = isWarp ? WARP_KEEPALIVE : WSS_KEEPALIVE;
+
+const client = mqtt.connect(brokerUrl, {
   protocolVersion: 5,
-  keepalive: KEEPALIVE,
+  keepalive,
   reconnectPeriod: RECONNECT_PERIOD,
   clean: false,  // Persistent session — receive queued messages on reconnect
   clientId: `gwa-mobile-${deviceId}`,
@@ -517,6 +636,8 @@ const client = mqtt.connect(MQTT_BROKER, {
 });
 ```
 
+**On WARP disconnection:** If the WARP connection drops (e.g., Android kills VPN background), the reconnection handler detects the failure and falls back to WSS automatically. On next successful reconnect via WSS, persistent session ensures queued messages are delivered.
+
 **Subscription topics:**
 - `gwa/+/+/+/state_change` — State machine transitions (for all issues)
 - `gwa/{owner}/{repo}/{issue}/#` — All events for a specific issue (when viewing detail)
@@ -524,8 +645,9 @@ const client = mqtt.connect(MQTT_BROKER, {
 **Reconnection strategy:**
 - Exponential backoff: 3s, 6s, 12s, 24s, max 60s
 - Add jitter (±20%) to prevent thundering herd
+- On reconnect failure, re-detect WARP availability and switch transport if needed
 - On reconnect, re-subscribe to active topics
-- Log disconnect reason for debugging
+- Log disconnect reason and transport type for debugging
 
 ### 5.4 Screens
 
@@ -584,14 +706,80 @@ async function registerForPushNotifications() {
 }
 ```
 
-### 5.6 Notification Categories
+### 5.6 Notification Strategy: Process-Stopping Events Only
 
-| Event | Priority | Title | Body |
-|-------|----------|-------|------|
-| `blocked` | High | "Question on #{issue}" | First 100 chars of question |
-| `error` | High | "Error on #{issue}" | Error message |
-| `complete` | Default | "#{issue} Complete" | Summary |
-| `state_change` | Low | "#{issue} → {state}" | Only if user opted in |
+**Principle:** Only events that halt a session's progress and require human action generate push notifications. Everything else is synced when the app returns to foreground.
+
+#### Push Notification Categories (Background)
+
+| Event | Priority | Title | Body | Action |
+|-------|----------|-------|------|--------|
+| `blocked` | **High** | "#{issue}: Question" | First 100 chars of question | Tap → Answer Modal |
+| `error` | **High** | "#{issue}: Error" | Error message | Tap → Session Detail |
+| `complete` | Default | "#{issue}: Complete" | "PR merged" / "Done" summary | Tap → Session Detail |
+
+These are the **only** events pushed. All three share the trait that the session has stopped making progress.
+
+#### NOT Pushed (Foreground Sync Only)
+
+| Event | Reason |
+|-------|--------|
+| `state_change` | Informational — session is still progressing, no action needed |
+| `activity` | Streaming output — only meaningful in real-time UI context |
+| `screenshot` | Large payload, only useful when actively viewing session |
+
+#### Android Notification Channels
+
+```typescript
+// High-priority channel for process-stopping events
+await Notifications.setNotificationChannelAsync('gwa-action-required', {
+  name: 'Action Required',
+  importance: Notifications.AndroidImportance.HIGH,
+  vibrationPattern: [0, 250, 250, 250],
+  sound: 'default',
+  groupId: 'gwa-alerts',
+});
+
+// Default channel for completions
+await Notifications.setNotificationChannelAsync('gwa-completions', {
+  name: 'Completions',
+  importance: Notifications.AndroidImportance.DEFAULT,
+  sound: 'default',
+  groupId: 'gwa-alerts',
+});
+```
+
+#### Throttling (Handled by Push Bridge, see Phase 4.5)
+
+- **Per-session debounce:** 30 seconds (collapse rapid events from same session)
+- **Global rate limit:** Max 5 notifications/minute (queue overflow)
+- **Per-session cooldown:** 5 minutes (prevent same session spamming)
+- **Android grouping:** Collapsed summary when 3+ unread ("3 sessions need attention")
+
+#### Foreground Resume Sync
+
+When the app returns from background to foreground:
+
+```typescript
+// src/mqtt/client.ts — AppState listener
+import { AppState } from 'react-native';
+
+AppState.addEventListener('change', (nextState) => {
+  if (nextState === 'active') {
+    // 1. MQTT persistent session delivers queued messages automatically
+    //    (clean: false ensures RabbitMQ queued messages during disconnect)
+
+    // 2. Fetch latest state from REST API as a consistency check
+    //    This catches anything missed if MQTT session expired
+    syncSessionsFromAPI();
+
+    // 3. Re-detect WARP availability (VPN may have toggled)
+    reconnectWithTransportDetection();
+  }
+});
+```
+
+The MQTT persistent session (`clean: false`) is the primary sync mechanism — RabbitMQ queues messages during disconnect and delivers them in FIFO order on reconnect. The REST API call is a safety net in case the MQTT session expired (default: 1 hour).
 
 ---
 
@@ -759,45 +947,57 @@ Document all v4.0 changes.
 - [ ] 3.11 Run `bun run typecheck` — verify clean
 - [ ] 3.12 Run `bun test` — verify all pass
 
-### Phase 4: AMQP Publishing
+### Phase 4: AMQP Publishing & Push Bridge
 - [ ] 4.1 Install `amqplib@^0.10.7` and `@types/amqplib`
 - [ ] 4.2 Create `src/lib/amqp.ts` with singleton connection + auto-reconnect
 - [ ] 4.3 Implement `publishActivity()` with publisher confirms
 - [ ] 4.4 Define routing key convention: `gwa.{owner}.{repo}.{issue}.{eventType}`
 - [ ] 4.5 Integrate with `logActivity()` in `src/lib/db.ts` (fire-and-forget)
 - [ ] 4.6 Publish XState state_change events on every transition
-- [ ] 4.7 Create `src/lib/push-bridge.ts` — MQTT subscriber → Expo push
-- [ ] 4.8 Add `push_tokens` table to `schema.sql`
-- [ ] 4.9 Add `RABBITMQ_URL` env var to StatefulSet
-- [ ] 4.10 Add MQTT WebSocket Cloudflare tunnel route
-- [ ] 4.11 Enable `rabbitmq_web_mqtt` plugin on RabbitMQ
-- [ ] 4.12 Write AMQP publish tests (mock broker)
-- [ ] 4.13 Write push bridge tests
-- [ ] 4.14 Run `bun run typecheck` — verify clean
-- [ ] 4.15 Run `bun test` — verify all pass
+- [ ] 4.7 Create `src/lib/push-bridge.ts` — subscribe to process-stopping MQTT topics only
+- [ ] 4.8 Implement per-session debounce (30s) in push bridge
+- [ ] 4.9 Implement global rate limit (5 notifications/minute) with queue overflow
+- [ ] 4.10 Implement per-session cooldown (5 minutes) to prevent spam
+- [ ] 4.11 Implement Expo push receipt handling — auto-remove invalid tokens
+- [ ] 4.12 Add `push_tokens` table to `schema.sql`
+- [ ] 4.13 Add `RABBITMQ_URL` env var to StatefulSet
+- [ ] 4.14 Add MQTT WebSocket Cloudflare tunnel route (WSS fallback)
+- [ ] 4.15 Configure Cloudflare Tunnel private network route for WARP path
+- [ ] 4.16 Configure Zero Trust Split Tunnels to include K3s service CIDR
+- [ ] 4.17 Add Gateway network policy allowing TCP to RabbitMQ ports
+- [ ] 4.18 Enable `rabbitmq_mqtt` + `rabbitmq_web_mqtt` plugins
+- [ ] 4.19 Write AMQP publish tests (mock broker)
+- [ ] 4.20 Write push bridge throttling tests (debounce, rate limit, cooldown)
+- [ ] 4.21 Run `bun run typecheck` — verify clean
+- [ ] 4.22 Run `bun test` — verify all pass
 
 ### Phase 5: React Native Mobile App
 - [ ] 5.1 Create Expo project with TypeScript template
 - [ ] 5.2 Install dependencies: `mqtt`, `expo-notifications`, `expo-device`, navigation
 - [ ] 5.3 Configure `app.json` with Android package name, FCM
 - [ ] 5.4 Add `google-services.json` for FCM
-- [ ] 5.5 Create MQTT client module with 60s keepalive, reconnection
-- [ ] 5.6 Implement exponential backoff with jitter for reconnection
-- [ ] 5.7 Create Zustand store for session state management
-- [ ] 5.8 Build Session List screen (index.tsx)
-- [ ] 5.9 Build Session Detail screen with activity feed
-- [ ] 5.10 Build Answer Modal for blocked sessions
-- [ ] 5.11 Build Screenshot Viewer component
-- [ ] 5.12 Build State Indicator component (color-coded states)
-- [ ] 5.13 Set up Expo notifications with channel configuration
-- [ ] 5.14 Register push token with GWA backend on app launch
-- [ ] 5.15 Handle notification taps — navigate to correct session
-- [ ] 5.16 Configure EAS Build for development and production profiles
-- [ ] 5.17 Build APK with `eas build --platform android`
-- [ ] 5.18 Test on physical Android device
-- [ ] 5.19 Test MQTT connection through Cloudflare tunnel
-- [ ] 5.20 Test push notifications (blocked, error, complete events)
-- [ ] 5.21 Test reconnection behavior (kill network, reconnect)
+- [ ] 5.5 Create dual-path MQTT client (WARP detection → native TCP or WSS fallback)
+- [ ] 5.6 Implement WARP availability detection via private IP health check
+- [ ] 5.7 Implement exponential backoff with jitter + transport failover on reconnect
+- [ ] 5.8 Create Zustand store for session state management
+- [ ] 5.9 Build Session List screen (index.tsx)
+- [ ] 5.10 Build Session Detail screen with activity feed
+- [ ] 5.11 Build Answer Modal for blocked sessions
+- [ ] 5.12 Build Screenshot Viewer component
+- [ ] 5.13 Build State Indicator component (color-coded states)
+- [ ] 5.14 Set up Expo notifications with two channels (action-required + completions)
+- [ ] 5.15 Register push token with GWA backend on app launch
+- [ ] 5.16 Handle notification taps — navigate to correct session/answer modal
+- [ ] 5.17 Implement AppState foreground resume sync (MQTT queue + REST safety net)
+- [ ] 5.18 Configure EAS Build for development and production profiles
+- [ ] 5.19 Build APK with `eas build --platform android`
+- [ ] 5.20 Test on physical Android device — WARP path (native TCP)
+- [ ] 5.21 Test on physical Android device — WSS fallback path
+- [ ] 5.22 Test push notifications — only blocked/error/complete arrive
+- [ ] 5.23 Test notification throttling — concurrent sessions don't flood
+- [ ] 5.24 Test foreground resume sync — missed messages appear in UI
+- [ ] 5.25 Test WARP→WSS failover — kill WARP, verify automatic fallback
+- [ ] 5.26 Install + configure Cloudflare One agent on test device
 
 ### Phase 6: REST API
 - [ ] 6.1 Create `src/api/handler.ts` with Bun.serve
@@ -853,9 +1053,12 @@ Document all v4.0 changes.
 ### Infrastructure
 | Component | Change |
 |-----------|--------|
-| RabbitMQ | Enable `rabbitmq_web_mqtt` plugin, port 15675 |
-| Cloudflare Tunnel | Add route `mqtt.bto.bar` → `rabbitmq:15675` |
+| RabbitMQ | Enable `rabbitmq_mqtt` (port 1883) + `rabbitmq_web_mqtt` (port 15675) |
+| Cloudflare Tunnel | Add public route `mqtt.bto.bar` → `rabbitmq:15675` (WSS fallback) |
+| Cloudflare Tunnel | Add private network route `10.43.0.0/16` (WARP primary) |
 | Cloudflare Tunnel | Add route `gwa-api.bto.bar` → `gwa-runner:3001` |
+| Zero Trust | Split Tunnels Include: `10.43.0.0/16`; Gateway policy: allow RabbitMQ ports |
+| Mobile Device | Install Cloudflare One agent, disable battery optimization |
 
 ---
 
@@ -864,9 +1067,13 @@ Document all v4.0 changes.
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
 | XState snapshot incompatibility after machine changes | Medium | High | Store schema version, write migration functions |
-| Cloudflare drops MQTT connections frequently | Medium | Low | 60s keepalive + exponential backoff reconnection + push notifications as fallback |
+| Cloudflare WSS drops (100s timeout) | Medium | Low | WARP primary path (8hr idle) + WSS as fallback only + push notifications for critical events |
+| WARP killed by Android in background | Medium | Medium | Always-on VPN + battery optimization whitelist + push bridge ensures process-stopping events always reach user |
+| Notification flood from concurrent sessions | High | Medium | Per-session debounce (30s) + global rate limit (5/min) + per-session cooldown (5min) + Android notification grouping |
 | amqplib large message bug on Bun (#5627) | Low | Low | Our payloads are < 4KB JSON |
 | SQLite BUSY under concurrent writes | Low | Medium | 5s busy_timeout + BEGIN IMMEDIATE + short transactions |
-| OEM battery optimization kills push notifications | Medium | Low | Document manual whitelist steps in app settings screen |
+| OEM battery optimization kills push + WARP | Medium | Medium | Document manual whitelist steps in app settings; app detects and prompts user to whitelist |
+| MQTT session expires during long background | Low | Medium | REST API safety net on foreground resume catches anything MQTT session missed |
 | React Native mqtt.js Expo Metro resolution | Low | Low | Fixed in Expo SDK 54+; use `unstable_enablePackageExports` if needed |
 | XState history state bug (#5178) | Low | Low | We use context.previousState instead of XState history states |
+| WARP battery drain on some devices | Medium | Low | Monitor reports; 5-minute keepalive on WARP path (vs 60s on WSS) reduces radio wake-ups |
