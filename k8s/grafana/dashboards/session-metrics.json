@@ -1,0 +1,574 @@
+{
+  "dashboard": {
+    "title": "GWA Session Metrics",
+    "uid": "gwa-sessions",
+    "tags": ["gwa", "sessions", "claude"],
+    "timezone": "browser",
+    "editable": true,
+    "schemaVersion": 36,
+    "version": 1,
+    "refresh": "30s",
+    "time": {
+      "from": "now-24h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": ["30s", "1m", "5m", "15m", "30m", "1h"],
+      "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "7d", "30d"]
+    },
+    "templating": {
+      "list": [
+        {
+          "name": "repo",
+          "type": "query",
+          "label": "Repository",
+          "query": "label_values(gwa_sessions_completed_total, repo)",
+          "datasource": "Mimir",
+          "multi": true,
+          "includeAll": true,
+          "allValue": ".*",
+          "current": {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          }
+        },
+        {
+          "name": "datasource",
+          "type": "datasource",
+          "query": "prometheus",
+          "current": {
+            "text": "Mimir",
+            "value": "Mimir"
+          },
+          "hide": 2
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Active Sessions",
+        "type": "stat",
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "gwa_sessions_active{repo=~\"$repo\"}",
+            "legendFormat": "Active"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "orientation": "auto",
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 5, "color": "yellow"},
+                {"value": 10, "color": "red"}
+              ]
+            }
+          }
+        },
+        "description": "Currently active Claude sessions"
+      },
+      {
+        "id": 2,
+        "title": "Success Rate (24h)",
+        "type": "gauge",
+        "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "100 * (sum(rate(gwa_sessions_completed_total{repo=~\"$repo\",status=\"complete\"}[24h])) / sum(rate(gwa_sessions_completed_total{repo=~\"$repo\"}[24h])))",
+            "legendFormat": "Success %"
+          }
+        ],
+        "options": {
+          "showThresholdLabels": false,
+          "showThresholdMarkers": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "red"},
+                {"value": 50, "color": "yellow"},
+                {"value": 80, "color": "green"}
+              ]
+            }
+          }
+        },
+        "description": "Percentage of sessions that completed successfully in the last 24 hours"
+      },
+      {
+        "id": 3,
+        "title": "Total Sessions Today",
+        "type": "stat",
+        "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "sum(increase(gwa_sessions_completed_total{repo=~\"$repo\"}[24h]))",
+            "legendFormat": "Total"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "orientation": "auto",
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"}
+          }
+        },
+        "description": "Total number of sessions completed in the last 24 hours"
+      },
+      {
+        "id": 4,
+        "title": "Avg Session Duration",
+        "type": "stat",
+        "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum by (le) (rate(gwa_session_duration_seconds_bucket{repo=~\"$repo\"}[$__rate_interval])))",
+            "legendFormat": "p50"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "orientation": "auto",
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 600, "color": "yellow"},
+                {"value": 1800, "color": "red"}
+              ]
+            }
+          }
+        },
+        "description": "Median (p50) session duration"
+      },
+      {
+        "id": 5,
+        "title": "Session Status Distribution",
+        "type": "piechart",
+        "gridPos": {"x": 0, "y": 4, "w": 8, "h": 8},
+        "targets": [
+          {
+            "expr": "sum by (status) (increase(gwa_sessions_completed_total{repo=~\"$repo\"}[$__range]))",
+            "legendFormat": "{{status}}"
+          }
+        ],
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "values": ["value", "percent"]
+          },
+          "pieType": "pie",
+          "tooltip": {"mode": "single"}
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"},
+            "custom": {
+              "hideFrom": {"legend": false, "tooltip": false, "viz": false}
+            },
+            "mappings": []
+          },
+          "overrides": [
+            {
+              "matcher": {"id": "byName", "options": "complete"},
+              "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]
+            },
+            {
+              "matcher": {"id": "byName", "options": "error"},
+              "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]
+            },
+            {
+              "matcher": {"id": "byName", "options": "interrupted"},
+              "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}]
+            }
+          ]
+        },
+        "description": "Distribution of session outcomes"
+      },
+      {
+        "id": 6,
+        "title": "Sessions Over Time",
+        "type": "timeseries",
+        "gridPos": {"x": 8, "y": 4, "w": 16, "h": 8},
+        "targets": [
+          {
+            "expr": "sum by (status) (rate(gwa_sessions_completed_total{repo=~\"$repo\"}[$__rate_interval]))",
+            "legendFormat": "{{status}}"
+          }
+        ],
+        "options": {
+          "tooltip": {"mode": "multi", "sort": "none"},
+          "legend": {"displayMode": "list", "placement": "bottom"}
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 50,
+              "stacking": {"mode": "normal"}
+            },
+            "color": {"mode": "palette-classic"}
+          },
+          "overrides": [
+            {
+              "matcher": {"id": "byName", "options": "{status=\"complete\"}"},
+              "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]
+            },
+            {
+              "matcher": {"id": "byName", "options": "{status=\"error\"}"},
+              "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]
+            },
+            {
+              "matcher": {"id": "byName", "options": "{status=\"interrupted\"}"},
+              "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}]
+            }
+          ]
+        },
+        "description": "Session completion rate over time, stacked by status"
+      },
+      {
+        "id": 7,
+        "title": "Error Rate Trend",
+        "type": "timeseries",
+        "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "sum(rate(gwa_sessions_completed_total{repo=~\"$repo\",status=\"error\"}[5m])) / sum(rate(gwa_sessions_completed_total{repo=~\"$repo\"}[5m])) * 100",
+            "legendFormat": "Error Rate %"
+          }
+        ],
+        "options": {
+          "tooltip": {"mode": "multi", "sort": "none"},
+          "legend": {"displayMode": "list", "placement": "bottom"}
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 20
+            },
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 10, "color": "yellow"},
+                {"value": 20, "color": "red"}
+              ]
+            }
+          }
+        },
+        "description": "Percentage of sessions that end in error over time"
+      },
+      {
+        "id": 8,
+        "title": "Session Duration p95",
+        "type": "timeseries",
+        "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum by (le, repo) (rate(gwa_session_duration_seconds_bucket{repo=~\"$repo\"}[$__rate_interval])))",
+            "legendFormat": "{{repo}}"
+          }
+        ],
+        "options": {
+          "tooltip": {"mode": "multi", "sort": "desc"},
+          "legend": {"displayMode": "table", "placement": "right", "values": ["last"]}
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 10
+            },
+            "color": {"mode": "palette-classic"}
+          }
+        },
+        "description": "95th percentile of session duration by repository"
+      },
+      {
+        "id": 9,
+        "title": "Duration Histogram",
+        "type": "heatmap",
+        "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "sum by (le) (rate(gwa_session_duration_seconds_bucket{repo=~\"$repo\"}[$__rate_interval]))",
+            "legendFormat": "{{le}}",
+            "format": "heatmap"
+          }
+        ],
+        "options": {
+          "calculate": false,
+          "color": {
+            "mode": "scheme",
+            "scheme": "Spectral",
+            "steps": 128
+          },
+          "yAxis": {"unit": "s"}
+        },
+        "description": "Heatmap showing distribution of session durations"
+      },
+      {
+        "id": 10,
+        "title": "Long-Running Sessions (>1 hour)",
+        "type": "table",
+        "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "topk(10, sum by (repo) (increase(gwa_session_duration_seconds_count{repo=~\"$repo\"}[$__range])) - sum by (repo) (increase(gwa_session_duration_seconds_bucket{repo=~\"$repo\",le=\"3600\"}[$__range])))",
+            "legendFormat": "{{repo}}",
+            "format": "table",
+            "instant": true
+          }
+        ],
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "left",
+              "displayMode": "auto"
+            }
+          }
+        },
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "renameByName": {
+                "repo": "Repository",
+                "Value": "Sessions > 1h"
+              }
+            }
+          }
+        ],
+        "description": "Sessions that took longer than 1 hour to complete"
+      },
+      {
+        "id": 11,
+        "title": "Tool Usage Frequency",
+        "type": "barchart",
+        "gridPos": {"x": 0, "y": 28, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "topk(10, sum by (tool_name) (increase(gwa_tool_calls_total{repo=~\"$repo\"}[$__range])))",
+            "legendFormat": "{{tool_name}}"
+          }
+        ],
+        "options": {
+          "orientation": "horizontal",
+          "xTickLabelRotation": 0,
+          "legend": {"displayMode": "hidden"}
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"}
+          }
+        },
+        "description": "Top 10 most frequently used tools"
+      },
+      {
+        "id": 12,
+        "title": "Commits Per Hour",
+        "type": "timeseries",
+        "gridPos": {"x": 12, "y": 28, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "sum by (repo) (rate(gwa_commits_created_total{repo=~\"$repo\"}[1h])) * 3600",
+            "legendFormat": "{{repo}}"
+          }
+        ],
+        "options": {
+          "tooltip": {"mode": "multi", "sort": "desc"},
+          "legend": {"displayMode": "table", "placement": "right", "values": ["last", "mean"]}
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 10
+            },
+            "color": {"mode": "palette-classic"}
+          }
+        },
+        "description": "Rate of commits created per hour by repository"
+      },
+      {
+        "id": 13,
+        "title": "Questions Asked vs Answered",
+        "type": "timeseries",
+        "gridPos": {"x": 0, "y": 36, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "sum(rate(gwa_questions_asked_total{repo=~\"$repo\"}[$__rate_interval]))",
+            "legendFormat": "Asked"
+          },
+          {
+            "expr": "sum(rate(gwa_questions_answered_total{repo=~\"$repo\"}[$__rate_interval]))",
+            "legendFormat": "Answered"
+          }
+        ],
+        "options": {
+          "tooltip": {"mode": "multi", "sort": "none"},
+          "legend": {"displayMode": "list", "placement": "bottom"}
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 10
+            },
+            "color": {"mode": "palette-classic"}
+          }
+        },
+        "description": "Rate of questions asked vs answered (interactive sessions)"
+      },
+      {
+        "id": 14,
+        "title": "Top Active Repositories",
+        "type": "table",
+        "gridPos": {"x": 12, "y": 36, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "topk(20, sum by (repo) (increase(gwa_sessions_completed_total{repo=~\"$repo\"}[24h])))",
+            "legendFormat": "{{repo}}",
+            "format": "table",
+            "instant": true
+          }
+        ],
+        "options": {
+          "showHeader": true,
+          "sortBy": [{"displayName": "Sessions (24h)", "desc": true}]
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "left",
+              "displayMode": "auto"
+            }
+          }
+        },
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "renameByName": {
+                "repo": "Repository",
+                "Value": "Sessions (24h)"
+              }
+            }
+          }
+        ],
+        "description": "Repositories with the most session activity in the last 24 hours"
+      },
+      {
+        "id": 15,
+        "title": "Question Response Latency (p95)",
+        "type": "timeseries",
+        "gridPos": {"x": 0, "y": 44, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum by (le, repo) (rate(gwa_question_response_seconds_bucket{repo=~\"$repo\"}[$__rate_interval])))",
+            "legendFormat": "{{repo}}"
+          }
+        ],
+        "options": {
+          "tooltip": {"mode": "multi", "sort": "desc"},
+          "legend": {"displayMode": "table", "placement": "right", "values": ["last", "mean"]}
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "fillOpacity": 10
+            },
+            "color": {"mode": "palette-classic"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 300, "color": "yellow"},
+                {"value": 600, "color": "red"}
+              ]
+            }
+          }
+        },
+        "description": "95th percentile of time from question asked to answered (user responsiveness)"
+      },
+      {
+        "id": 16,
+        "title": "Agent Task Success Rate",
+        "type": "gauge",
+        "gridPos": {"x": 12, "y": 44, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "100 * (sum(rate(gwa_agent_tasks_total{status=\"completed\"}[24h])) / sum(rate(gwa_agent_tasks_total[24h])))",
+            "legendFormat": "Success %"
+          }
+        ],
+        "options": {
+          "showThresholdLabels": false,
+          "showThresholdMarkers": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "red"},
+                {"value": 70, "color": "yellow"},
+                {"value": 90, "color": "green"}
+              ]
+            }
+          }
+        },
+        "description": "Percentage of swarm agent tasks that completed successfully in the last 24 hours"
+      }
+    ]
+  }
+}

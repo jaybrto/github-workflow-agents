@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Telemetry MUST be imported first
-import { withSpan, Metrics, shutdown as shutdownTelemetry, log } from "./lib/telemetry.js";
+import { withSpan, Metrics, SessionMetrics, shutdown as shutdownTelemetry, log } from "./lib/telemetry.js";
 
 import { parseArgs } from "util";
 import * as db from "./lib/db.js";
@@ -105,6 +105,9 @@ async function main() {
           Metrics.recordDbOperation("createQuestion", true);
           return id;
         });
+
+        // Record metrics for question asked
+        SessionMetrics.recordQuestionAsked(args.repo);
 
         // 4. Build and post question to GitHub
         let body = `🤔 **Claude is asking:**\n\n${args.question}`;

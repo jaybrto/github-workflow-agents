@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Telemetry MUST be imported first
-import { withSpan, Metrics, shutdown as shutdownTelemetry, log } from "./lib/telemetry.js";
+import { withSpan, Metrics, SessionMetrics, shutdown as shutdownTelemetry, log } from "./lib/telemetry.js";
 
 import { parseArgs } from "util";
 import * as github from "./lib/github.js";
@@ -160,6 +160,10 @@ async function handleResponse(
   // Update question with answer
   if (pendingQuestion) {
     db.answerQuestion(pendingQuestion.id, answer, answeredBy);
+
+    // Record metrics for question answered
+    const latencySeconds = Math.floor(Date.now() / 1000) - pendingQuestion.asked_at;
+    SessionMetrics.recordQuestionAnswered(args.repo, latencySeconds);
   }
 
   if (session.status !== "blocked") {
