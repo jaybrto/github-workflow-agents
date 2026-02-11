@@ -43,6 +43,32 @@ data:
     # Create worktrees directory
     mkdir -p /home/runner/worktrees
 
+    # Initialize SQLite database if needed
+    DB_PATH="${DB_PATH:-/home/runner/gwa.db}"
+    SCHEMA_PATH="${SCHEMA_PATH:-/opt/gwa/schema.sql}"
+
+    if [ ! -f "${DB_PATH}" ] || [ ! -s "${DB_PATH}" ]; then
+      echo "[GWA] Initializing SQLite database..."
+      if [ -f "${SCHEMA_PATH}" ]; then
+        sqlite3 "${DB_PATH}" < "${SCHEMA_PATH}"
+        echo "[GWA] Database initialized from ${SCHEMA_PATH}"
+      else
+        echo "[GWA] WARNING: Schema file not found at ${SCHEMA_PATH}"
+        echo "[GWA] Database will be initialized on first use"
+      fi
+    else
+      # Check if sessions table exists (basic schema validation)
+      if ! sqlite3 "${DB_PATH}" ".tables" 2>/dev/null | grep -q sessions; then
+        echo "[GWA] Database exists but missing tables, reinitializing..."
+        if [ -f "${SCHEMA_PATH}" ]; then
+          sqlite3 "${DB_PATH}" < "${SCHEMA_PATH}"
+          echo "[GWA] Database reinitialized from ${SCHEMA_PATH}"
+        fi
+      else
+        echo "[GWA] Database already initialized"
+      fi
+    fi
+
     # Register this pod in Redis with 7-day TTL
     redis-cli -h "${REDIS_HOST}" -p "${REDIS_PORT}" \
       SET "repo:${REPO}:pod" "${POD_NAME}" EX 604800

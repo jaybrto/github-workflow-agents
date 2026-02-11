@@ -14,7 +14,7 @@ export interface REPLStartInput {
   sessionId: string;
   kubectlAttachCommand: string;
   tmuxAttachCommand: string;
-  prNumber: number;
+  prNumber?: number; // Optional for issue planning (before PR created)
   trigger: string;
 }
 
@@ -38,11 +38,23 @@ export interface QuestionInput {
   prNumber: number;
 }
 
+// Phase 15 (v3.4) - Progress comment type
+export interface ProgressInput {
+  type: "progress";
+  sessionId: string;
+  message: string;
+  subAgents?: string[];
+  currentTask?: string;
+  tasksCompleted?: number;
+  tasksTotal?: number;
+}
+
 export type CommentInput =
   | REPLStartInput
   | HeadlessCompleteInput
   | ErrorInput
-  | QuestionInput;
+  | QuestionInput
+  | ProgressInput;
 
 export interface GeneratedComment {
   body: string;
@@ -109,6 +121,28 @@ function generateQuestionComment(input: QuestionInput): string {
 ${input.question}
 
 Reply with \`@claude-answer: your answer here\` to continue.`;
+}
+
+// Phase 15 (v3.4) - Progress comment generation
+function generateProgressComment(input: ProgressInput): string {
+  let comment = `🔄 **Progress Update**\n\n${input.message}\n`;
+
+  if (input.subAgents?.length) {
+    comment += `\n**Active Agents:** ${input.subAgents.join(", ")}\n`;
+  }
+
+  if (input.currentTask) {
+    comment += `\n**Current Task:** ${input.currentTask}\n`;
+  }
+
+  if (input.tasksTotal !== undefined && input.tasksTotal > 0) {
+    const completed = input.tasksCompleted || 0;
+    const pct = Math.round((completed / input.tasksTotal) * 100);
+    const progressBar = "█".repeat(Math.floor(pct / 10)) + "░".repeat(10 - Math.floor(pct / 10));
+    comment += `\n**Progress:** ${progressBar} ${completed}/${input.tasksTotal} tasks (${pct}%)\n`;
+  }
+
+  return comment;
 }
 
 function truncateOutput(output: string, maxLength: number = 1000): string {
@@ -241,11 +275,15 @@ export async function generateComment(
     "comment.generate",
     async (span) => {
       span.setAttribute("comment.type", input.type);
-      span.setAttribute("comment.pr_number", input.prNumber);
+      if ("prNumber" in input && input.prNumber !== undefined) {
+        span.setAttribute("comment.pr_number", input.prNumber);
+      }
 
       log("debug", "Generating comment", {
         type: input.type,
-        pr_number: input.prNumber,
+        ...("prNumber" in input && input.prNumber !== undefined
+          ? { pr_number: input.prNumber }
+          : {}),
       });
 
       switch (input.type) {
@@ -274,6 +312,16 @@ export async function generateComment(
             usedAI: false,
           };
 
+        case "progress":
+          span.setAttribute("comment.session_id", input.sessionId);
+          if (input.currentTask) {
+            span.setAttribute("comment.current_task", input.currentTask);
+          }
+          return {
+            body: generateProgressComment(input),
+            usedAI: false,
+          };
+
         default: {
           // TypeScript exhaustiveness check
           const _exhaustive: never = input;
@@ -284,7 +332,9 @@ export async function generateComment(
     {
       attributes: {
         "comment.type": input.type,
-        "comment.pr_number": input.prNumber,
+        ...("prNumber" in input && input.prNumber !== undefined
+          ? { "comment.pr_number": input.prNumber }
+          : {}),
       },
     }
   );

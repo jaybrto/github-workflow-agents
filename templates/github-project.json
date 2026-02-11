@@ -142,6 +142,31 @@
       "name": "Duration Hours",
       "dataType": "NUMBER",
       "description": "Actual time spent in hours"
+    },
+    {
+      "name": "Pod Name",
+      "dataType": "TEXT",
+      "description": "Name of the K8s pod running this session"
+    },
+    {
+      "name": "Tmux Window",
+      "dataType": "TEXT",
+      "description": "Tmux window/pane ID for this session"
+    },
+    {
+      "name": "Kubectl Command",
+      "dataType": "TEXT",
+      "description": "Full command to attach to the running session"
+    },
+    {
+      "name": "Worktree Path",
+      "dataType": "TEXT",
+      "description": "Git worktree path for this session"
+    },
+    {
+      "name": "Sub Agents Used",
+      "dataType": "TEXT",
+      "description": "Comma-separated names of spawned Claude sub-agents"
     }
   ],
 

@@ -10,8 +10,9 @@ import { readFileSync, existsSync } from "fs";
 import { dirname } from "path";
 
 // Database paths - can be overridden via environment
-const DB_PATH = process.env.DB_PATH || "/home/runner/.claude/gwa.db";
-const SCHEMA_PATH = process.env.SCHEMA_PATH || "/home/runner/.claude/schema.sql";
+// Defaults align with Helm chart values (see helm/gwa-runner/values.yaml)
+const DB_PATH = process.env.DB_PATH || "/home/runner/gwa.db";
+const SCHEMA_PATH = process.env.SCHEMA_PATH || "/opt/gwa/schema.sql";
 
 // Connection pool for concurrent access
 let dbInstance: Database | null = null;
@@ -189,6 +190,8 @@ export interface Session {
   initial_prompt: string | null;
   completion_summary: string | null;
   error_message: string | null;
+  // Phase 15 (v3.4) - GitHub Projects integration
+  project_item_id: string | null;
 }
 
 export function getSession(sessionId: string): Session | null {
@@ -214,11 +217,13 @@ export function createSession(data: {
   tmux_window?: number;
   worktree_path?: string;
   initial_prompt?: string;
+  // Phase 15 (v3.4) - GitHub Projects integration
+  project_item_id?: string;
 }): void {
   const db = getDatabase();
   db.run(
-    `INSERT INTO sessions (id, type, github_number, github_type, repo, branch, base_branch, tmux_window, worktree_path, initial_prompt, last_activity_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())`,
+    `INSERT INTO sessions (id, type, github_number, github_type, repo, branch, base_branch, tmux_window, worktree_path, initial_prompt, project_item_id, last_activity_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())`,
     [
       data.id,
       data.type,
@@ -230,6 +235,7 @@ export function createSession(data: {
       data.tmux_window || null,
       data.worktree_path || null,
       data.initial_prompt || null,
+      data.project_item_id || null,
     ]
   );
 

@@ -84,6 +84,12 @@ export const CUSTOM_FIELDS = {
   STARTED_AT: "Started At",
   COMPLETED_AT: "Completed At",
   DURATION_HOURS: "Duration Hours",
+  // Phase 15 (v3.4) - Enhanced session fields
+  POD_NAME: "Pod Name",
+  TMUX_WINDOW: "Tmux Window",
+  KUBECTL_COMMAND: "Kubectl Command",
+  WORKTREE_PATH: "Worktree Path",
+  SUB_AGENTS_USED: "Sub Agents Used",
 } as const;
 
 // ============================================================================
@@ -191,6 +197,102 @@ const ADD_ITEM_TO_PROJECT_MUTATION = `
     }
   }
 `;
+
+const CREATE_FIELD_MUTATION = `
+  mutation CreateField($projectId: ID!, $name: String!, $dataType: ProjectV2CustomFieldType!) {
+    createProjectV2Field(input: {
+      projectId: $projectId
+      dataType: $dataType
+      name: $name
+    }) {
+      projectV2Field {
+        ... on ProjectV2Field {
+          id
+          name
+          dataType
+        }
+      }
+    }
+  }
+`;
+
+const CREATE_SINGLE_SELECT_FIELD_MUTATION = `
+  mutation CreateSingleSelectField($projectId: ID!, $name: String!) {
+    createProjectV2Field(input: {
+      projectId: $projectId
+      dataType: SINGLE_SELECT
+      name: $name
+    }) {
+      projectV2Field {
+        ... on ProjectV2SingleSelectField {
+          id
+          name
+        }
+      }
+    }
+  }
+`;
+
+const UPDATE_SINGLE_SELECT_FIELD_MUTATION = `
+  mutation UpdateSingleSelectField($projectId: ID!, $fieldId: ID!, $singleSelectOptions: [ProjectV2SingleSelectFieldOptionInput!]!) {
+    updateProjectV2Field(input: {
+      projectId: $projectId
+      fieldId: $fieldId
+      singleSelectOptions: $singleSelectOptions
+    }) {
+      projectV2Field {
+        ... on ProjectV2SingleSelectField {
+          id
+          options {
+            id
+            name
+          }
+        }
+      }
+    }
+  }
+`;
+
+// ============================================================================
+// Required Custom Fields Definition
+// ============================================================================
+
+interface RequiredField {
+  name: string;
+  dataType: "TEXT" | "NUMBER" | "DATE" | "SINGLE_SELECT";
+  options?: string[];
+}
+
+/**
+ * All custom fields required by GWA, with their data types.
+ * This is the source of truth - fields will be created if missing.
+ */
+const REQUIRED_FIELDS: RequiredField[] = [
+  { name: CUSTOM_FIELDS.ESTIMATED_HOURS, dataType: "NUMBER" },
+  { name: CUSTOM_FIELDS.COMPLEXITY, dataType: "SINGLE_SELECT", options: ["Low", "Medium", "High", "Critical"] },
+  { name: CUSTOM_FIELDS.RISK_LEVEL, dataType: "SINGLE_SELECT", options: ["Low", "Medium", "High"] },
+  { name: CUSTOM_FIELDS.ASSIGNED_AGENT, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.SESSION_ID, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.PLAN_VERSION, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.PLAN_STATUS, dataType: "SINGLE_SELECT", options: ["Draft", "Pending Review", "Approved", "In Progress", "Completed"] },
+  { name: CUSTOM_FIELDS.TASKS_COUNT, dataType: "NUMBER" },
+  { name: CUSTOM_FIELDS.TASKS_COMPLETED, dataType: "NUMBER" },
+  { name: CUSTOM_FIELDS.BLOCKED_REASON, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.QA_STATUS, dataType: "SINGLE_SELECT", options: ["Not Started", "Running", "Passed", "Failed"] },
+  { name: CUSTOM_FIELDS.QA_RUN_ID, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.BRANCH_NAME, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.PR_NUMBER, dataType: "NUMBER" },
+  { name: CUSTOM_FIELDS.CREATED_BY, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.STARTED_AT, dataType: "DATE" },
+  { name: CUSTOM_FIELDS.COMPLETED_AT, dataType: "DATE" },
+  { name: CUSTOM_FIELDS.DURATION_HOURS, dataType: "NUMBER" },
+  // Phase 15 (v3.4) - Enhanced session fields
+  { name: CUSTOM_FIELDS.POD_NAME, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.TMUX_WINDOW, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.KUBECTL_COMMAND, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.WORKTREE_PATH, dataType: "TEXT" },
+  { name: CUSTOM_FIELDS.SUB_AGENTS_USED, dataType: "TEXT" },
+];
 
 // ============================================================================
 // Core Functions
@@ -427,6 +529,110 @@ export async function addItemToProject(
 }
 
 // ============================================================================
+// Field Provisioning
+// ============================================================================
+
+/**
+ * Ensure all required custom fields exist on a project.
+ * Creates any missing fields. Should be called during session start.
+ *
+ * @returns Object with counts of existing and created fields
+ */
+export async function ensureCustomFields(
+  owner: string,
+  projectNumber: number
+): Promise<{ existing: number; created: number; failed: string[] }> {
+  return withSpan("projects.ensureCustomFields", async (span) => {
+    span.setAttribute("projects.owner", owner);
+    span.setAttribute("projects.number", projectNumber);
+
+    const client = getOctokit();
+
+    // Get current project with all fields
+    const project = await getProject(owner, projectNumber);
+    const existingFieldNames = new Set(project.fields.map((f) => f.name));
+
+    let existing = 0;
+    let created = 0;
+    const failed: string[] = [];
+
+    for (const requiredField of REQUIRED_FIELDS) {
+      if (existingFieldNames.has(requiredField.name)) {
+        existing++;
+        continue;
+      }
+
+      // Field doesn't exist, create it
+      try {
+        if (requiredField.dataType === "SINGLE_SELECT") {
+          // Create single select field
+          const createResult = await client.graphql<{
+            createProjectV2Field: {
+              projectV2Field: { id: string; name: string };
+            };
+          }>(CREATE_SINGLE_SELECT_FIELD_MUTATION, {
+            projectId: project.id,
+            name: requiredField.name,
+          });
+
+          // Update with options if provided
+          if (requiredField.options && requiredField.options.length > 0) {
+            const fieldId = createResult.createProjectV2Field.projectV2Field.id;
+            const options = requiredField.options.map((opt) => ({
+              name: opt,
+              description: "",
+              color: "GRAY",
+            }));
+
+            await client.graphql(UPDATE_SINGLE_SELECT_FIELD_MUTATION, {
+              projectId: project.id,
+              fieldId,
+              singleSelectOptions: options,
+            });
+          }
+        } else {
+          // Create other field types (TEXT, NUMBER, DATE)
+          await client.graphql(CREATE_FIELD_MUTATION, {
+            projectId: project.id,
+            name: requiredField.name,
+            dataType: requiredField.dataType,
+          });
+        }
+
+        created++;
+        log("info", `Created missing field: ${requiredField.name}`, {
+          projectNumber,
+          dataType: requiredField.dataType,
+        });
+      } catch (error) {
+        failed.push(requiredField.name);
+        log("warn", `Failed to create field: ${requiredField.name}`, {
+          projectNumber,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    span.setAttribute("projects.fields.existing", existing);
+    span.setAttribute("projects.fields.created", created);
+    span.setAttribute("projects.fields.failed", failed.length);
+
+    if (created > 0) {
+      log("info", `Field provisioning complete`, {
+        projectNumber,
+        existing,
+        created,
+        failed: failed.length,
+      });
+    }
+
+    Metrics.recordGitHubApiCall("graphql.ensureCustomFields", true);
+
+    return { existing, created, failed };
+  });
+}
+
+// ============================================================================
 // High-Level Workflow Functions
 // ============================================================================
 
@@ -535,6 +741,12 @@ export async function updateSessionFields(
     prNumber?: number;
     startedAt?: Date;
     completedAt?: Date;
+    // Phase 15 (v3.4) - Enhanced session fields
+    podName?: string;
+    tmuxWindow?: string;
+    kubectlCommand?: string;
+    worktreePath?: string;
+    subAgentsUsed?: string;
   }
 ): Promise<void> {
   return withSpan("projects.updateSessionFields", async (span) => {
@@ -568,6 +780,32 @@ export async function updateSessionFields(
     if (sessionData.completedAt) {
       const field = project.fields.find((f) => f.name === CUSTOM_FIELDS.COMPLETED_AT);
       if (field) await updateDateField(project.id, itemId, field.id, sessionData.completedAt);
+    }
+
+    // Phase 15 (v3.4) - Enhanced session fields
+    if (sessionData.podName) {
+      const field = project.fields.find((f) => f.name === CUSTOM_FIELDS.POD_NAME);
+      if (field) await updateTextField(project.id, itemId, field.id, sessionData.podName);
+    }
+
+    if (sessionData.tmuxWindow) {
+      const field = project.fields.find((f) => f.name === CUSTOM_FIELDS.TMUX_WINDOW);
+      if (field) await updateTextField(project.id, itemId, field.id, sessionData.tmuxWindow);
+    }
+
+    if (sessionData.kubectlCommand) {
+      const field = project.fields.find((f) => f.name === CUSTOM_FIELDS.KUBECTL_COMMAND);
+      if (field) await updateTextField(project.id, itemId, field.id, sessionData.kubectlCommand);
+    }
+
+    if (sessionData.worktreePath) {
+      const field = project.fields.find((f) => f.name === CUSTOM_FIELDS.WORKTREE_PATH);
+      if (field) await updateTextField(project.id, itemId, field.id, sessionData.worktreePath);
+    }
+
+    if (sessionData.subAgentsUsed) {
+      const field = project.fields.find((f) => f.name === CUSTOM_FIELDS.SUB_AGENTS_USED);
+      if (field) await updateTextField(project.id, itemId, field.id, sessionData.subAgentsUsed);
     }
   });
 }
@@ -627,6 +865,7 @@ export default {
   updateNumberField,
   updateDateField,
   addItemToProject,
+  ensureCustomFields,
   moveToColumn,
   updatePlanFields,
   updateSessionFields,

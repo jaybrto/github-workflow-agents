@@ -7,13 +7,46 @@
 
 import { parseArgs } from "util";
 import { existsSync } from "fs";
+import { unlink } from "fs/promises";
 import { withSpan, shutdown as shutdownTelemetry, log } from "../lib/telemetry.js";
 import { getOctokit } from "../lib/github.js";
 import * as tmux from "../lib/tmux.js";
 import * as db from "../lib/db.js";
+import { getSessionScreenshots } from "../lib/screenshot.js";
 
 const WORKTREES_PATH = "/home/runner/worktrees";
 const REPO_PATH = "/home/runner/repo";
+
+/**
+ * Clean up all screenshots for a session (Phase 15 v3.4).
+ * Deletes files from disk and removes tracking records from SQLite.
+ */
+async function cleanupSessionScreenshots(sessionId: string): Promise<number> {
+  const screenshots = getSessionScreenshots(sessionId);
+
+  if (screenshots.length === 0) {
+    return 0;
+  }
+
+  log("info", `Cleaning up ${screenshots.length} screenshots for session ${sessionId}`);
+
+  for (const { file_path } of screenshots) {
+    try {
+      await unlink(file_path);
+      log("debug", `Deleted screenshot: ${file_path}`);
+    } catch {
+      // Ignore if already deleted
+      log("debug", `Screenshot already deleted: ${file_path}`);
+    }
+  }
+
+  // Remove from database
+  const database = db.getDatabase();
+  database.run(`DELETE FROM screenshots WHERE session_id = ?`, [sessionId]);
+
+  log("info", `Cleaned up ${screenshots.length} screenshots for session ${sessionId}`);
+  return screenshots.length;
+}
 
 interface DeployCleanupArgs {
   issue: number;
@@ -179,6 +212,9 @@ async function deployAndCleanup(issueNumber: number, repo: string): Promise<void
     }
   }
 
+  // 6.5. Clean up screenshots (Phase 15 v3.4)
+  const screenshotsDeleted = await cleanupSessionScreenshots(sessionId);
+
   // 7. Get session stats for summary
   const database = db.getDatabase();
   const commits = database
@@ -219,6 +255,7 @@ This issue has been automatically completed by Claude.
 - [x] Tmux window destroyed
 - [x] Git worktree removed
 - [x] Session marked complete
+${screenshotsDeleted > 0 ? `- [x] ${screenshotsDeleted} screenshots cleaned up` : ""}
 
 ${prNumber ? `PR #${prNumber} has been merged.` : ""}`;
 

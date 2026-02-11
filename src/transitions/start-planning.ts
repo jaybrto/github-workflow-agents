@@ -6,10 +6,18 @@
  */
 
 import { parseArgs } from "util";
+import * as os from "os";
 import { withSpan, shutdown as shutdownTelemetry, log } from "../lib/telemetry.js";
 import { getOctokit } from "../lib/github.js";
 import * as tmux from "../lib/tmux.js";
 import * as db from "../lib/db.js";
+import {
+  getProject,
+  getProjectItem,
+  updateSessionFields,
+  ensureCustomFields,
+} from "../lib/projects.js";
+import { generateComment } from "../lib/comment-generator.js";
 
 const WORKTREES_PATH = "/home/runner/worktrees";
 const REPO_PATH = "/home/runner/repo";
@@ -17,6 +25,8 @@ const REPO_PATH = "/home/runner/repo";
 interface StartPlanningArgs {
   issue: number;
   repo: string;
+  itemId?: string; // GitHub Projects item ID (from webhook)
+  projectNumber?: number; // GitHub Project number
 }
 
 async function exec(
@@ -40,16 +50,20 @@ async function main() {
     options: {
       issue: { type: "string" },
       repo: { type: "string" },
+      "item-id": { type: "string" },
+      "project-number": { type: "string" },
     },
   });
 
   const args: StartPlanningArgs = {
     issue: parseInt(values.issue || "0", 10),
     repo: values.repo || "",
+    itemId: values["item-id"],
+    projectNumber: values["project-number"] ? parseInt(values["project-number"], 10) : undefined,
   };
 
   if (!args.issue || !args.repo) {
-    console.error("Usage: gwa-start-planning --issue <number> --repo <owner/repo>");
+    console.error("Usage: gwa-start-planning --issue <number> --repo <owner/repo> [--item-id <id>] [--project-number <num>]");
     await shutdownTelemetry();
     process.exit(1);
   }
@@ -65,7 +79,7 @@ async function main() {
         repo: args.repo,
       });
 
-      await startPlanningSession(args.issue, args.repo);
+      await startPlanningSession(args.issue, args.repo, args.itemId, args.projectNumber);
       success = true;
     });
   } catch (error) {
@@ -80,12 +94,20 @@ async function main() {
   process.exit(success ? 0 : 1);
 }
 
-async function startPlanningSession(issueNumber: number, repo: string): Promise<void> {
+async function startPlanningSession(
+  issueNumber: number,
+  repo: string,
+  itemId?: string,
+  projectNumber?: number
+): Promise<void> {
   const sessionId = `issue-${issueNumber}`;
   const branchName = `claude/issue-${issueNumber}`;
   const worktreePath = `${WORKTREES_PATH}/${sessionId}`;
   const planDir = `${worktreePath}/.plans/${sessionId}`;
   const [owner, repoName] = repo.split("/");
+
+  // Get pod name (hostname in K8s)
+  const podName = os.hostname() || process.env.POD_NAME || "unknown";
 
   // 1. Ensure tmux session exists
   await tmux.ensureSession();
@@ -163,6 +185,35 @@ Use /handoff if you need to pause and resume later.`;
 
   // 7. Initialize database and create session
   db.initDatabase();
+
+  // Resolve project item ID if not provided
+  let resolvedItemId = itemId;
+  let project;
+  if (projectNumber) {
+    try {
+      project = await getProject(owner, projectNumber);
+
+      // Ensure all required custom fields exist (creates missing ones)
+      const fieldResult = await ensureCustomFields(owner, projectNumber);
+      if (fieldResult.created > 0) {
+        log("info", `Created ${fieldResult.created} missing project fields`);
+        // Re-fetch project to get newly created fields
+        project = await getProject(owner, projectNumber);
+      }
+
+      if (!resolvedItemId) {
+        // Query GitHub API to find project item
+        const projectItem = await getProjectItem(owner, repoName, issueNumber, project.id);
+        resolvedItemId = projectItem?.id;
+        if (resolvedItemId) {
+          log("info", `Resolved project item ID from API: ${resolvedItemId}`);
+        }
+      }
+    } catch (error) {
+      log("warn", "Failed to resolve project item", { error: String(error) });
+    }
+  }
+
   db.createSession({
     id: sessionId,
     type: "feature",
@@ -172,6 +223,7 @@ Use /handoff if you need to pause and resume later.`;
     branch: branchName,
     worktree_path: worktreePath,
     initial_prompt: `Planning session for issue #${issueNumber}`,
+    project_item_id: resolvedItemId,
   });
 
   db.logActivity(sessionId, "planning_started", { issue: issueNumber }, "workflow");
@@ -182,24 +234,68 @@ Use /handoff if you need to pause and resume later.`;
   // Update session with window number
   db.updateSessionStatus(sessionId, "running", { tmux_window: windowNum });
 
-  // 9. Start Claude REPL
+  // Build kubectl attach command
+  const kubectlCommand = `kubectl exec -it ${podName} -- tmux attach -t gwa-work:${windowNum}`;
+
+  // 9. Update GitHub Project fields with session info
+  if (project && resolvedItemId) {
+    try {
+      await updateSessionFields(project, resolvedItemId, {
+        sessionId,
+        branchName,
+        startedAt: new Date(),
+        assignedAgent: "claude-architect",
+        podName,
+        tmuxWindow: String(windowNum),
+        kubectlCommand,
+        worktreePath,
+      });
+      log("info", "Updated GitHub Project fields");
+    } catch (error) {
+      log("warn", "Failed to update project fields", { error: String(error) });
+    }
+  }
+
+  // 10. Start Claude REPL
   log("info", "Starting Claude REPL");
   await tmux.sendCommand(windowNum, "claude --dangerously-skip-permissions");
 
   // Wait for REPL to initialize
   await new Promise((resolve) => setTimeout(resolve, 3000));
 
-  // 10. Send planning prompt
+  // 11. Send planning prompt
   log("info", "Sending planning prompt");
   // Write prompt to temp file for reliable sending
   const tempFile = `/tmp/gwa-prompt-${sessionId}.md`;
   await Bun.write(tempFile, planningPrompt);
   await tmux.sendCommand(windowNum, `Read ${tempFile} and follow the instructions.`);
 
+  // 12. Post REPL start comment to GitHub issue
+  try {
+    const comment = await generateComment({
+      type: "repl_start",
+      sessionId,
+      kubectlAttachCommand: kubectlCommand,
+      tmuxAttachCommand: `tmux attach -t gwa-work:${windowNum}`,
+      trigger: "Planning started",
+    });
+    await octokit.issues.createComment({
+      owner,
+      repo: repoName,
+      issue_number: issueNumber,
+      body: comment.body,
+    });
+    log("info", "Posted REPL start comment to issue");
+  } catch (error) {
+    log("warn", "Failed to post start comment", { error: String(error) });
+  }
+
   log("info", "Planning session started", {
     sessionId,
     window: windowNum,
     worktree: worktreePath,
+    podName,
+    ...(resolvedItemId ? { projectItemId: resolvedItemId } : {}),
   });
 
   console.log(`
@@ -207,8 +303,10 @@ Planning session started:
   Session ID: ${sessionId}
   Tmux Window: ${windowNum}
   Worktree: ${worktreePath}
+  Pod: ${podName}
+  Project Item: ${resolvedItemId || "N/A"}
 
-Attach with: kubectl exec -it gwa-runner-0 -- tmux attach -t gwa-work:${windowNum}
+Attach with: ${kubectlCommand}
 `);
 }
 

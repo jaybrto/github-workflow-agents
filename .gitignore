@@ -143,3 +143,6 @@ vite.config.ts.timestamp-*
 Thumbs.db
 .history/
 .docs/
+
+# Planning prompts (local only, replaced per phase)
+PLAN_PROMPT.md

@@ -6,6 +6,7 @@
  */
 import { capturePane } from "./tmux";
 import { log, withSpan } from "./telemetry";
+import { getDatabase } from "./db";
 
 export interface ScreenshotOptions {
   pod?: string; // Pod name (default from env)
@@ -312,4 +313,68 @@ export function toBase64DataUri(buffer: Buffer): string {
 export function toMarkdownImage(buffer: Buffer, alt: string = "Terminal screenshot"): string {
   const dataUri = toBase64DataUri(buffer);
   return `![${alt}](${dataUri})`;
+}
+
+// ============================================================================
+// DISK STORAGE (Phase 15 v3.4)
+// ============================================================================
+
+const SCREENSHOT_DIR = "/tmp/gwa-screenshots";
+
+/**
+ * Save a screenshot to disk and track in SQLite.
+ * Returns the file path for later cleanup.
+ */
+export async function saveScreenshotToDisk(
+  sessionId: string,
+  buffer: Buffer,
+  eventType: "question" | "completion" | "error" | "progress"
+): Promise<string> {
+  return withSpan("screenshot.saveToDisk", async (span) => {
+    span.setAttribute("session.id", sessionId);
+    span.setAttribute("event.type", eventType);
+    span.setAttribute("file.size", buffer.length);
+
+    const timestamp = Date.now();
+    const filename = `${sessionId}-${eventType}-${timestamp}.png`;
+    const filePath = `${SCREENSHOT_DIR}/${filename}`;
+
+    // Ensure directory exists by writing a .gitkeep file first
+    try {
+      await Bun.write(`${SCREENSHOT_DIR}/.gitkeep`, "");
+    } catch {
+      // Directory might already exist, ignore
+    }
+
+    // Write screenshot to disk
+    await Bun.write(filePath, buffer);
+
+    // Track in SQLite
+    const db = getDatabase();
+    db.run(
+      `INSERT INTO screenshots (session_id, file_path, file_size, event_type)
+       VALUES (?, ?, ?, ?)`,
+      [sessionId, filePath, buffer.length, eventType]
+    );
+
+    log("debug", "Screenshot saved to disk", {
+      sessionId,
+      filePath,
+      sizeKB: Math.round(buffer.length / 1024 * 10) / 10,
+      eventType,
+    });
+
+    span.setAttribute("file.path", filePath);
+    return filePath;
+  });
+}
+
+/**
+ * Get all screenshots for a session from the database.
+ */
+export function getSessionScreenshots(sessionId: string): Array<{ file_path: string; file_size: number; event_type: string }> {
+  const db = getDatabase();
+  return db.query(
+    `SELECT file_path, file_size, event_type FROM screenshots WHERE session_id = ?`
+  ).all(sessionId) as Array<{ file_path: string; file_size: number; event_type: string }>;
 }

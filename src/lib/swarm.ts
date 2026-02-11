@@ -8,9 +8,16 @@
  * All agents share the same tmux session but different windows.
  */
 
-import { getDatabase, logActivity } from "./db.js";
+import { getDatabase, logActivity, getSession } from "./db.js";
 import * as tmux from "./tmux.js";
 import { withSpan, Metrics, log } from "./telemetry.js";
+import {
+  getProject,
+  getProjectItem,
+  updateSessionFields,
+} from "./projects.js";
+import { generateComment, type GeneratedComment } from "./comment-generator.js";
+import { getOctokit } from "./github.js";
 
 // ============================================================================
 // Types
@@ -78,6 +85,102 @@ export interface WorkerSpawnConfig {
   };
   validation: string[];
   workingDir: string;
+}
+
+// ============================================================================
+// Sub-Agent Tracking (Phase 15 v3.4)
+// ============================================================================
+
+/**
+ * Update the Sub Agents Used field in GitHub Projects when a worker is spawned.
+ */
+async function updateSubAgentsUsed(
+  sessionId: string,
+  repo: string,
+  agentName: string
+): Promise<void> {
+  try {
+    const session = getSession(sessionId);
+    if (!session?.project_item_id) {
+      log("debug", "No project item ID found, skipping sub-agent update", { sessionId });
+      return;
+    }
+
+    const [owner] = repo.split("/");
+    const projectNumber = parseInt(process.env.GWA_PROJECT_NUMBER || "1", 10);
+
+    const project = await getProject(owner, projectNumber);
+    const projectItem = await getProjectItem(owner, repo.split("/")[1], session.github_number, project.id);
+
+    if (!projectItem) {
+      log("debug", "Project item not found", { sessionId });
+      return;
+    }
+
+    // Get current sub-agents list
+    const currentField = projectItem.fieldValues.find(
+      (f) => f.fieldName === "Sub Agents Used"
+    );
+    const currentAgents = currentField?.value as string || "";
+
+    // Append new agent name
+    const agentsList = currentAgents
+      ? `${currentAgents}, ${agentName}`
+      : agentName;
+
+    await updateSessionFields(project, session.project_item_id, {
+      subAgentsUsed: agentsList,
+    });
+
+    log("info", "Updated sub-agents tracking", { sessionId, agents: agentsList });
+  } catch (error) {
+    log("warn", "Failed to update sub-agents tracking", {
+      sessionId,
+      error: String(error),
+    });
+  }
+}
+
+/**
+ * Post a progress comment when a worker is spawned.
+ */
+async function postWorkerSpawnComment(
+  sessionId: string,
+  repo: string,
+  workerName: string,
+  taskId: string
+): Promise<void> {
+  try {
+    const session = getSession(sessionId);
+    if (!session) {
+      return;
+    }
+
+    const [owner, repoName] = repo.split("/");
+    const octokit = getOctokit();
+
+    const comment = await generateComment({
+      type: "progress",
+      sessionId,
+      message: `🚀 Spawned worker agent: **${workerName}** (Task: ${taskId})`,
+      subAgents: [workerName],
+      currentTask: taskId,
+    });
+
+    await octokit.issues.createComment({
+      owner,
+      repo: repoName,
+      issue_number: session.github_number,
+      body: comment.body,
+    });
+
+    log("debug", "Posted worker spawn comment", { sessionId, workerName, taskId });
+  } catch (error) {
+    log("warn", "Failed to post worker spawn comment", {
+      sessionId,
+      error: String(error),
+    });
+  }
 }
 
 // ============================================================================
@@ -364,6 +467,12 @@ export async function spawnWorker(
     log("info", "Worker spawned", { taskId: config.taskId, window: workerWindow });
 
     Metrics.recordSwarmWorker("spawned");
+
+    // Phase 15 (v3.4) - Update sub-agents tracking in GitHub Projects
+    await updateSubAgentsUsed(session.id, session.repo, config.name);
+
+    // Post progress comment about worker spawn
+    await postWorkerSpawnComment(session.id, session.repo, config.name, config.taskId);
 
     return workerWindow;
   });

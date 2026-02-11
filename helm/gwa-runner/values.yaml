@@ -21,6 +21,16 @@ redis:
   host: redis-haproxy.redis-system.svc.cluster.local
   port: 6379
 
+# Database configuration
+database:
+  # Path to SQLite database file (on PVC)
+  path: /home/runner/gwa.db
+  # Path to schema.sql file
+  # Default uses baked-in schema; set to repo path to use repo version
+  schemaPath: /opt/gwa/schema.sql
+  # Alternative: use schema from cloned repo (updated on git pull)
+  # schemaPath: /home/runner/repo/schema.sql
+
 # OpenTelemetry configuration
 otel:
   enabled: true

@@ -79,8 +79,10 @@ COPY --from=builder /build/dist/gwa-send-answer /usr/local/bin/
 COPY --from=builder /build/dist/gwa-deploy-and-cleanup /usr/local/bin/
 RUN chmod +x /usr/local/bin/gwa-*
 
-# Copy SQLite schema
-COPY --from=builder /build/schema.sql /home/runner/.claude/schema.sql
+# Copy SQLite schema to a location outside PVC mounts
+# This ensures the schema survives volume mounts and can be used as source
+RUN mkdir -p /opt/gwa
+COPY --from=builder /build/schema.sql /opt/gwa/schema.sql
 
 # Create runner user and directories
 RUN useradd -m -d /home/runner -s /bin/bash runner && \

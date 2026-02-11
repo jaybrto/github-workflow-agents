@@ -1,6 +1,6 @@
 -- GitHub Workflow Agents - SQLite Schema
--- Version: 2.1
--- Date: 2026-02-09
+-- Version: 2.2
+-- Date: 2026-02-10
 
 -- Enable WAL mode for concurrent access (5+ sessions)
 PRAGMA journal_mode=WAL;
@@ -41,12 +41,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Summary
     initial_prompt TEXT,              -- What started this session
     completion_summary TEXT,          -- Final summary when done
-    error_message TEXT                -- If status = "error"
+    error_message TEXT,               -- If status = "error"
+
+    -- GitHub Projects integration (v2.2)
+    project_item_id TEXT              -- GitHub Projects item ID for updates
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_github ON sessions(github_type, github_number);
 CREATE INDEX IF NOT EXISTS idx_sessions_repo ON sessions(repo);
+CREATE INDEX IF NOT EXISTS idx_sessions_project_item ON sessions(project_item_id);
 
 -- ============================================
 -- QUESTIONS: Track all questions and answers
