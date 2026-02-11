@@ -125,11 +125,12 @@ jobs:
         if: github.event.inputs.handler == 'start-planning'
         run: |
           echo "Starting planning phase for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
-          # Create session, spawn architect agent for planning
-          kubectl exec "$POD" -- "$GWA_BIN/gwa-architect" \
+          # Create session, setup worktree, start Claude REPL with planning prompt
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-start-planning" \
             --issue "${{ github.event.inputs.issue_number }}" \
             --repo "${{ github.event.inputs.issue_repo }}" \
-            --phase planning
+            --item-id "${{ github.event.inputs.item_id }}" \
+            --project-number "$PROJECT_NUMBER"
 
       - name: "Handler: inject-prompt"
         if: github.event.inputs.handler == 'inject-prompt'
