@@ -3,10 +3,32 @@
  *
  * GraphQL API for managing GitHub Projects v2 - status updates, custom fields,
  * and column-based workflow triggers.
+ *
+ * Supports both organization and personal (user) projects via GWA_PROJECT_OWNER_TYPE.
  */
 
 import { getOctokit } from "./github.js";
 import { withSpan, Metrics, log } from "./telemetry.js";
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/**
+ * Project owner type - determines which GraphQL queries to use.
+ * Set via GWA_PROJECT_OWNER_TYPE env var.
+ * - "organization": Project is owned by a GitHub organization (default)
+ * - "user": Project is owned by a personal GitHub account
+ */
+export type ProjectOwnerType = "organization" | "user";
+
+export function getProjectOwnerType(): ProjectOwnerType {
+  const envValue = process.env.GWA_PROJECT_OWNER_TYPE?.toLowerCase();
+  if (envValue === "user") {
+    return "user";
+  }
+  return "organization"; // default
+}
 
 // ============================================================================
 // Types
@@ -96,41 +118,47 @@ export const CUSTOM_FIELDS = {
 // GraphQL Queries
 // ============================================================================
 
-const GET_PROJECT_QUERY = `
-  query GetProject($owner: String!, $number: Int!) {
-    organization(login: $owner) {
-      projectV2(number: $number) {
-        id
-        number
-        title
-        url
-        fields(first: 50) {
-          nodes {
-            ... on ProjectV2Field {
-              id
-              name
-              dataType
-            }
-            ... on ProjectV2SingleSelectField {
-              id
-              name
-              dataType
-              options {
+/**
+ * Build the GET_PROJECT query for the appropriate owner type.
+ */
+function buildGetProjectQuery(ownerType: ProjectOwnerType): string {
+  const ownerField = ownerType === "user" ? "user" : "organization";
+  return `
+    query GetProject($owner: String!, $number: Int!) {
+      ${ownerField}(login: $owner) {
+        projectV2(number: $number) {
+          id
+          number
+          title
+          url
+          fields(first: 50) {
+            nodes {
+              ... on ProjectV2Field {
                 id
                 name
+                dataType
               }
-            }
-            ... on ProjectV2IterationField {
-              id
-              name
-              dataType
+              ... on ProjectV2SingleSelectField {
+                id
+                name
+                dataType
+                options {
+                  id
+                  name
+                }
+              }
+              ... on ProjectV2IterationField {
+                id
+                name
+                dataType
+              }
             }
           }
         }
       }
     }
-  }
-`;
+  `;
+}
 
 const GET_PROJECT_ITEM_QUERY = `
   query GetProjectItem($projectId: ID!, $issueNumber: Int!, $owner: String!, $repo: String!) {
@@ -300,25 +328,42 @@ const REQUIRED_FIELDS: RequiredField[] = [
 
 /**
  * Get a GitHub Project by number.
+ * Supports both organization and personal (user) projects.
  */
 export async function getProject(owner: string, projectNumber: number): Promise<Project> {
   return withSpan("projects.getProject", async (span) => {
+    const ownerType = getProjectOwnerType();
     span.setAttribute("projects.owner", owner);
     span.setAttribute("projects.number", projectNumber);
+    span.setAttribute("projects.owner_type", ownerType);
 
     const client = getOctokit();
-    const result = await client.graphql<{
-      organization: { projectV2: {
-        id: string;
-        number: number;
-        title: string;
-        url: string;
-        fields: { nodes: ProjectField[] };
-      } };
-    }>(GET_PROJECT_QUERY, { owner, number: projectNumber });
+    const query = buildGetProjectQuery(ownerType);
 
-    const project = result.organization.projectV2;
-    const statusField = project.fields.nodes.find(
+    // Response shape varies based on owner type
+    type ProjectData = {
+      id: string;
+      number: number;
+      title: string;
+      url: string;
+      fields: { nodes: ProjectField[] };
+    };
+
+    const result = await client.graphql<{
+      organization?: { projectV2: ProjectData };
+      user?: { projectV2: ProjectData };
+    }>(query, { owner, number: projectNumber });
+
+    // Extract project from either organization or user response
+    const projectData = ownerType === "user"
+      ? result.user?.projectV2
+      : result.organization?.projectV2;
+
+    if (!projectData) {
+      throw new Error(`Project #${projectNumber} not found for ${ownerType} "${owner}"`);
+    }
+
+    const statusField = projectData.fields.nodes.find(
       (f) => f.name === "Status" && f.dataType === "SINGLE_SELECT"
     );
 
@@ -329,11 +374,11 @@ export async function getProject(owner: string, projectNumber: number): Promise<
     Metrics.recordGitHubApiCall("graphql.getProject", true);
 
     return {
-      id: project.id,
-      number: project.number,
-      title: project.title,
-      url: project.url,
-      fields: project.fields.nodes,
+      id: projectData.id,
+      number: projectData.number,
+      title: projectData.title,
+      url: projectData.url,
+      fields: projectData.fields.nodes,
       statusField,
     };
   });

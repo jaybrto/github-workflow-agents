@@ -31,6 +31,17 @@ database:
   # Alternative: use schema from cloned repo (updated on git pull)
   # schemaPath: /home/runner/repo/schema.sql
 
+# GitHub Projects configuration
+project:
+  # Owner type: "organization" or "user"
+  # Use "user" for personal account projects, "organization" for org projects
+  ownerType: organization
+  # Project number (required for project integration)
+  number: ""
+  # Project owner (defaults to repo.owner if not set)
+  # Set this if project owner differs from repo owner
+  owner: ""
+
 # OpenTelemetry configuration
 otel:
   enabled: true

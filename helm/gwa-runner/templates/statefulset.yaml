@@ -64,6 +64,17 @@ spec:
               value: {{ .Values.database.path | quote }}
             - name: SCHEMA_PATH
               value: {{ .Values.database.schemaPath | quote }}
+            # GitHub Projects config
+            - name: GWA_PROJECT_OWNER_TYPE
+              value: {{ .Values.project.ownerType | quote }}
+            {{- if .Values.project.number }}
+            - name: GWA_PROJECT_NUMBER
+              value: {{ .Values.project.number | quote }}
+            {{- end }}
+            {{- if .Values.project.owner }}
+            - name: GWA_PROJECT_OWNER
+              value: {{ .Values.project.owner | quote }}
+            {{- end }}
             # Secrets
             - name: CLAUDE_CODE_OAUTH_TOKEN
               valueFrom:

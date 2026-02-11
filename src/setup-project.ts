@@ -17,6 +17,7 @@ import { resolve, normalize } from "path";
 import { withSpan, Metrics, shutdown as shutdownTelemetry, log } from "./lib/telemetry.js";
 import { getOctokit } from "./lib/github.js";
 import { logActivity } from "./lib/db.js";
+import { getProjectOwnerType, type ProjectOwnerType } from "./lib/projects.js";
 
 // SECURITY: Allowed directories for template files
 const ALLOWED_TEMPLATE_DIRS = [
@@ -156,14 +157,20 @@ const UPDATE_SINGLE_SELECT_FIELD_MUTATION = `
   }
 `;
 
-const GET_ORG_ID_QUERY = `
-  query GetOrgId($login: String!) {
-    organization(login: $login) {
-      id
-      name
+/**
+ * Build query to get owner ID (works for both org and user).
+ */
+function buildGetOwnerIdQuery(ownerType: ProjectOwnerType): string {
+  const ownerField = ownerType === "user" ? "user" : "organization";
+  return `
+    query GetOwnerId($login: String!) {
+      ${ownerField}(login: $login) {
+        id
+        name
+      }
     }
-  }
-`;
+  `;
+}
 
 async function main() {
   const { values } = parseArgs({
@@ -274,13 +281,23 @@ async function setupProject(args: SetupArgs): Promise<{ id: string; number: numb
       template = getDefaultTemplate(args.repo);
     }
 
-    // Get organization ID
-    const orgResult = await octokit.graphql<{
-      organization: { id: string; name: string };
-    }>(GET_ORG_ID_QUERY, { login: args.org });
+    // Get owner ID (supports both org and user)
+    const ownerType = getProjectOwnerType();
+    const ownerIdQuery = buildGetOwnerIdQuery(ownerType);
 
-    const ownerId = orgResult.organization.id;
+    const ownerResult = await octokit.graphql<{
+      organization?: { id: string; name: string };
+      user?: { id: string; name: string };
+    }>(ownerIdQuery, { login: args.org });
+
+    const ownerData = ownerType === "user" ? ownerResult.user : ownerResult.organization;
+    if (!ownerData) {
+      throw new Error(`${ownerType} "${args.org}" not found`);
+    }
+
+    const ownerId = ownerData.id;
     span.setAttribute("setup.owner_id", ownerId);
+    span.setAttribute("setup.owner_type", ownerType);
 
     // Create project
     const projectTitle = template.project.title.replace("{{REPO_NAME}}", args.repo);
@@ -365,15 +382,19 @@ async function setupProject(args: SetupArgs): Promise<{ id: string; number: numb
 
 /**
  * Get existing project fields.
+ * Supports both organization and personal (user) projects.
  */
 async function getProjectFields(
   octokit: ReturnType<typeof getOctokit>,
   org: string,
   projectNumber: number
 ): Promise<Array<{ id: string; name: string; dataType: string }>> {
+  const ownerType = getProjectOwnerType();
+  const ownerField = ownerType === "user" ? "user" : "organization";
+
   const query = `
     query GetProjectFields($owner: String!, $number: Int!) {
-      organization(login: $owner) {
+      ${ownerField}(login: $owner) {
         projectV2(number: $number) {
           fields(first: 50) {
             nodes {
@@ -399,17 +420,25 @@ async function getProjectFields(
     }
   `;
 
-  const result = await octokit.graphql<{
-    organization: {
-      projectV2: {
-        fields: {
-          nodes: Array<{ id: string; name: string; dataType: string }>;
-        };
+  type FieldsData = {
+    projectV2: {
+      fields: {
+        nodes: Array<{ id: string; name: string; dataType: string }>;
       };
     };
+  };
+
+  const result = await octokit.graphql<{
+    organization?: FieldsData;
+    user?: FieldsData;
   }>(query, { owner: org, number: projectNumber });
 
-  return result.organization.projectV2.fields.nodes;
+  const data = ownerType === "user" ? result.user : result.organization;
+  if (!data) {
+    throw new Error(`Project #${projectNumber} not found for ${ownerType} "${org}"`);
+  }
+
+  return data.projectV2.fields.nodes;
 }
 
 /**
