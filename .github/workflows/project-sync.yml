@@ -46,7 +46,7 @@ name: GWA Project Sync
 
 env:
   POD: gwa-runner-0
-  PROJECT_NUMBER: 1
+  PROJECT_NUMBER: 2
   GWA_BIN: /usr/local/bin
 
 jobs:

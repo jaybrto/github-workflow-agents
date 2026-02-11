@@ -35,12 +35,12 @@ database:
 project:
   # Owner type: "organization" or "user"
   # Use "user" for personal account projects, "organization" for org projects
-  ownerType: organization
+  ownerType: user
   # Project number (required for project integration)
-  number: ""
+  number: "2"
   # Project owner (defaults to repo.owner if not set)
   # Set this if project owner differs from repo owner
-  owner: ""
+  owner: "jaybrto"
 
 # OpenTelemetry configuration
 otel:
