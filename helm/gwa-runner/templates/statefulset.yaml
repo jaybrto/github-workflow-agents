@@ -30,9 +30,10 @@ spec:
             - sh
             - -c
             - |
-              chown -R 1000:1000 /home/runner/.claude
-              chown -R 1000:1000 /home/runner/worktrees
-              chown -R 1000:1000 /home/runner/repo
+              # Use UID 1001 (runner) not 1000 (node) - container runs as runner
+              chown -R 1001:1001 /home/runner/.claude
+              chown -R 1001:1001 /home/runner/worktrees
+              chown -R 1001:1001 /home/runner/repo
           volumeMounts:
             - name: claude-session
               mountPath: /home/runner/.claude
