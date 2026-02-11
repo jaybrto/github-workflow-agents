@@ -137,11 +137,22 @@ spec:
               mountPath: /scripts/entrypoint.sh
               subPath: entrypoint.sh
               readOnly: true
+            {{- if .Values.secrets.claudeCredentialsSecret }}
+            - name: claude-credentials
+              mountPath: /etc/claude-credentials
+              readOnly: true
+            {{- end }}
       volumes:
         - name: init-script
           configMap:
             name: {{ include "gwa.fullname" . }}-init
             defaultMode: 0755
+        {{- if .Values.secrets.claudeCredentialsSecret }}
+        - name: claude-credentials
+          secret:
+            secretName: {{ .Values.secrets.claudeCredentialsSecret }}
+            defaultMode: 0400
+        {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: claude-session

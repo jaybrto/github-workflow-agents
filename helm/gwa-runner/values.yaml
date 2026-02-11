@@ -132,3 +132,6 @@ secrets:
   name: gwa-secrets
   claudeOauthTokenKey: claude-oauth-token
   githubTokenKey: github-token
+  # Optional: Pre-cached Claude credentials (created via browser auth once)
+  # Create with: kubectl create secret generic claude-credentials --from-file=credentials.json=.credentials.json
+  claudeCredentialsSecret: claude-credentials

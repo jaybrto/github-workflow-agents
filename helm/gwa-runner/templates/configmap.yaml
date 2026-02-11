@@ -43,6 +43,23 @@ data:
     # Create worktrees directory
     mkdir -p /home/runner/worktrees
 
+    # Copy Claude credentials if not present (from mounted secret)
+    CLAUDE_CONFIG_DIR="/home/runner/.claude"
+    CLAUDE_CREDS_SRC="/etc/claude-credentials/credentials.json"
+    CLAUDE_CREDS_DST="${CLAUDE_CONFIG_DIR}/.credentials.json"
+
+    if [ -f "${CLAUDE_CREDS_SRC}" ] && [ ! -f "${CLAUDE_CREDS_DST}" ]; then
+      echo "[GWA] Copying Claude credentials from secret..."
+      mkdir -p "${CLAUDE_CONFIG_DIR}"
+      cp "${CLAUDE_CREDS_SRC}" "${CLAUDE_CREDS_DST}"
+      chmod 600 "${CLAUDE_CREDS_DST}"
+      echo "[GWA] Claude credentials installed"
+    elif [ -f "${CLAUDE_CREDS_DST}" ]; then
+      echo "[GWA] Claude credentials already present"
+    else
+      echo "[GWA] WARNING: No Claude credentials found - manual auth required"
+    fi
+
     # Initialize SQLite database if needed
     DB_PATH="${DB_PATH:-/home/runner/gwa.db}"
     SCHEMA_PATH="${SCHEMA_PATH:-/opt/gwa/schema.sql}"
