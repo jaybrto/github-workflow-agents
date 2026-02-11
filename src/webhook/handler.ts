@@ -40,7 +40,8 @@ interface ProjectV2ItemEvent {
       };
     };
   };
-  organization: {
+  // Organization is present for org projects, absent for user projects
+  organization?: {
     login: string;
     id: number;
   };
@@ -214,13 +215,14 @@ async function handleProjectItemEvent(event: ProjectV2ItemEvent): Promise<void> 
 
   const fromColumn = fieldChange.from?.name || "None";
   const toColumn = fieldChange.to?.name || "None";
-  const orgLogin = event.organization.login;
+  // For org projects, use organization.login; for user projects, use sender.login
+  const ownerLogin = event.organization?.login || event.sender.login;
   const itemNodeId = event.projects_v2_item.node_id;
   const contentNodeId = event.projects_v2_item.content_node_id;
   const contentType = event.projects_v2_item.content_type;
 
   console.log(`[Webhook] Column transition: ${fromColumn} -> ${toColumn}`);
-  console.log(`[Webhook] Organization: ${orgLogin}`);
+  console.log(`[Webhook] Owner: ${ownerLogin} (${event.organization ? "org" : "user"})`);
   console.log(`[Webhook] Content: ${contentType} (${contentNodeId})`);
 
   // Determine which transition handler to trigger
@@ -328,7 +330,7 @@ async function handleProjectItemEvent(event: ProjectV2ItemEvent): Promise<void> 
       to_column: toColumn,
       content_type: contentType,
       content_id: contentNodeId,
-      org: orgLogin,
+      owner: ownerLogin,
       handler: handler,
       issue_number: String(contentDetails.number),
       issue_title: contentDetails.title,
