@@ -21,6 +21,10 @@ data:
     git config --global --add safe.directory /home/runner/repo
     git config --global --add safe.directory '*'
 
+    # Configure git identity for commits
+    git config --global user.email "gwa-bot@users.noreply.github.com"
+    git config --global user.name "GWA Bot"
+
     # GitHub CLI uses GITHUB_TOKEN env var automatically
     # Just configure git to use gh for auth
     if [ -n "${GITHUB_TOKEN:-}" ]; then

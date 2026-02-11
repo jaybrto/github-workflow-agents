@@ -180,7 +180,29 @@ Create a comprehensive implementation plan:
 3. **Break Down into Tasks** - Create 3-7 parallelizable tasks with dependencies
 4. **Write Plan Files** - Create files in .plans/${sessionId}/
 
-When planning is complete, the project item will be moved to 'In Progress'.
+## After Planning Complete
+
+When you finish creating all plan files, you MUST:
+
+1. **Commit the plan files**:
+   \`\`\`bash
+   git add .plans/
+   git commit -m "docs(plan): add implementation plan for issue #${issueNumber}"
+   \`\`\`
+
+2. **Push to remote**:
+   \`\`\`bash
+   git push origin ${branchName}
+   \`\`\`
+
+3. **Post a summary comment** to the GitHub issue:
+   \`\`\`bash
+   gh issue comment ${issueNumber} --repo ${repo} --body "## 📋 Implementation Plan Complete
+
+   [Include a brief summary of the plan with links to the plan files on the branch]"
+   \`\`\`
+
+When all steps are complete, the project item will be moved to 'In Progress'.
 Use /handoff if you need to pause and resume later.`;
 
   // 7. Initialize database and create session
