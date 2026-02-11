@@ -2,11 +2,14 @@
 
 ## Overview
 
+**Version:** 3.4 (February 10, 2026)
+
 The GitHub Workflow Agents (GWA) webhook and state machine are fully functional. This session needs to:
-1. Build and deploy the missing `gwa-*` binaries to the K8s pod
+1. ~~Build and deploy the missing `gwa-*` binaries to the K8s pod~~ ✅ DONE
 2. Set up SQLite database for session persistence (NOT Redis - we use SQLite now)
 3. Test the full end-to-end flow with actual REPL sessions
 4. Verify all 17 handlers work with real Claude Code sessions
+5. **NEW (v3.4):** Add enhanced session fields and screenshot tracking
 
 ## Current State
 
@@ -16,11 +19,12 @@ The GitHub Workflow Agents (GWA) webhook and state machine are fully functional.
 - **GitHub App**: `Workflow-Agents-BTO` installed on `bto-labs` org with `projects_v2_item` events
 - **State machine**: All 17 handlers trigger correctly for 38 valid transitions
 - **Cross-org access**: Webhook resolves issue details from `bto-labs` before triggering workflows in `jaybrto`
+- **Binaries deployed**: `gwa-*` binaries are now in the pod at `/usr/local/bin/`
 
 ### What's NOT Working
-- **Handler execution fails**: `kubectl exec "$POD" -- gwa-architect/gwa-cleanup/gwa-respond` fails because binaries don't exist
-- **No session persistence**: SQLite database not initialized in the pod
+- **SQLite not initialized**: Database schema not applied to `/home/runner/gwa.db`
 - **No actual REPL sessions**: Can't test pause/resume without the full stack
+- **Missing v3.4 features**: New custom fields, screenshot lifecycle, progress comments
 
 ## Architecture
 
@@ -258,6 +262,38 @@ d8f53d3 fix(workflow): accept webhook inputs and fetch issue details from conten
 f8d90bd feat(webhook): add GitHub App webhook handler for project column transitions
 ```
 
+## v3.4 New Features (Phase 15)
+
+### New Custom Fields to Add
+| Field | Type | Purpose |
+|-------|------|---------|
+| Pod Name | TEXT | K8s pod name (from hostname) |
+| Tmux Window | TEXT | Tmux window/pane ID |
+| Kubectl Command | TEXT | Full attach command |
+| Worktree Path | TEXT | Git worktree location |
+| Sub Agents Used | TEXT | Comma-separated agent names |
+
+### Files to Modify
+1. `templates/github-project.json` - Add 5 new custom fields
+2. `src/lib/projects.ts` - Extend CUSTOM_FIELDS and updateSessionFields()
+3. `src/transitions/start-planning.ts` - Call updateSessionFields(), post comment
+4. `src/lib/screenshot.ts` - Add saveScreenshotToDisk()
+5. `src/transitions/deploy-and-cleanup.ts` - Add screenshot cleanup
+6. `src/lib/swarm.ts` - Track spawned sub-agents
+7. `src/lib/comment-generator.ts` - Add progress comment type
+
+### Screenshot Lifecycle
+- Save to `/tmp/gwa-screenshots/` for troubleshooting
+- Track in SQLite `screenshots` table
+- Attach to comments only on errors/anomalies
+- Delete when session transitions to Done
+
+### Schema Migration Required
+```sql
+ALTER TABLE sessions ADD COLUMN project_item_id TEXT;
+CREATE INDEX idx_sessions_project_item ON sessions(project_item_id);
+```
+
 ## Success Criteria
 
 The end-to-end integration is complete when:
@@ -268,6 +304,8 @@ The end-to-end integration is complete when:
 5. ✅ Moving to Done cleans up the session
 6. ✅ All 17 handlers execute without errors
 7. ✅ Test script `./scripts/test-all-transitions.sh` passes
+8. **NEW:** GitHub Project shows Pod Name, Tmux Window, Kubectl Command
+9. **NEW:** Screenshots tracked and cleaned up on Done
 
 ## Notes
 
