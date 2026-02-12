@@ -69,26 +69,30 @@ This plan upgrades GWA from a lookup-table state machine with dual persistence t
                   │                             │                    │
                   ▼                             ▼                    ▼
          ┌─────────────────────────────────────────────────────────────────┐
-         │  React Native App (Expo Dev Build)                              │
+         │  Native Android App (Kotlin/Jetpack Compose)                    │
          │                                                                 │
-         │  Foreground: mqtt.js (WARP native TCP or WSS fallback)         │
-         │  Background: FCM push (process-stopping events only)           │
-         │  Resume:     Sync missed MQTT messages on foreground return    │
+         │  Terminal: Termux terminal-view (native Canvas, 200x50)        │
+         │  MQTT:     Paho native TCP (LAN/WARP) or WSS (fallback)       │
+         │  FG Svc:   Optional always-on MQTT via foreground service      │
+         │  BG Push:  Firebase FCM (process-stopping events only)         │
+         │  Resume:   Sync missed MQTT messages on foreground return      │
+         │  Relay:    OkHttp WebSocket to terminal relay (raw PTY bytes)  │
          │                                                                 │
          │  Notification throttling: grouped + debounced per-session      │
          └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Connectivity Model: WARP Primary, WSS Fallback
+### Connectivity Model: LAN TCP → WARP TCP → WSS Fallback
 
-The mobile app supports two MQTT connectivity paths:
+The native Android app supports three MQTT connectivity paths (tried in order):
 
 | Path | Transport | Idle Timeout | Requires | When Used |
 |------|-----------|-------------|----------|-----------|
-| **WARP (primary)** | Native TCP via private IP | **8 hours** (Gateway proxy) | Cloudflare One agent on device | WARP VPN detected active |
-| **WSS (fallback)** | WebSocket over HTTPS tunnel | **100 seconds** | Nothing extra | WARP unavailable or disconnected |
+| **LAN (primary)** | Native TCP to `10.43.x.x:1883` | **Unlimited** (direct) | On homelab WiFi/LAN | Device on local network |
+| **WARP (secondary)** | Native TCP to `10.43.x.x:1883` via WireGuard | **8 hours** (Gateway proxy) | Cloudflare One agent | Away from home, WARP active |
+| **WSS (fallback)** | WebSocket to `wss://mqtt.bto.bar/ws` | **100 seconds** | Nothing extra | WARP unavailable |
 
-The app detects WARP availability at startup by attempting a TCP connection to the private RabbitMQ IP. If reachable, it uses native MQTT (`mqtt://10.43.x.x:1883`). If not, it falls back to WSS (`wss://mqtt.bto.bar/ws`) with a 60-second keepalive.
+The app probes the private RabbitMQ IP on startup. If reachable (LAN or WARP), it uses native MQTT TCP — no WebSocket, no tunnel, no `rabbitmq_web_mqtt` plugin needed. Only falls back to WSS when the private IP is unreachable. Native TCP also means `rabbitmq_mqtt` plugin (port 1883) is the primary, not `rabbitmq_web_mqtt` (port 15675).
 
 ---
 
@@ -104,14 +108,15 @@ The app detects WARP availability at startup by attempting a TCP connection to t
 - **Gotcha: History state bug [#5178](https://github.com/statelyai/xstate/issues/5178).** Restoring from `JSON.stringify → JSON.parse` can break history state behavior. **Mitigation:** We use the `blocked` state's `previousState` context field instead of XState history states.
 - **Gotcha: Machine version changes.** No built-in migration. **Fix:** Store a schema version alongside snapshots.
 
-### React Native MQTT
+### Native Android MQTT & Terminal
 
-- **Library:** `mqtt.js` v5.15.0+ is the only viable option. Pure JS, Expo-compatible, full MQTT 5.0.
-- **Transport:** WebSocket only (`wss://`). No native TCP in Expo managed workflow.
-- **Gotcha: Background MQTT is impossible.** Android kills WebSocket connections when backgrounded. `expo-background-task` has a 15-minute minimum interval. **Solution:** Use FCM push notifications for background delivery. Server-side MQTT subscriber forwards critical events (blocked, error, complete) as push notifications.
-- **Gotcha: Expo SDK 54+ requires dev builds for notifications.** Push notifications no longer work in Expo Go. Must use `npx expo run:android` or EAS Build.
-- **Gotcha: FCM v1 mandatory.** Legacy API shut down Sept 2024. Need both `google-services.json` (app identity) and Service Account Key JSON (server credentials). Different files, different security posture.
-- **Gotcha: OEM battery optimization.** Xiaomi, Huawei, Samsung aggressively kill background processes. Push notifications may be delayed on these devices. No programmatic fix — users must whitelist the app manually.
+- **Library: Termux `terminal-view` + `terminal-emulator`** via JitPack (`com.github.termux.termux-app:terminal-view:v0.118.0`). Battle-tested terminal renderer — handles 200x50 natively with truecolor (24-bit ANSI). Accepts raw PTY byte streams via `InputStream`/`OutputStream` pair. Renders via direct Canvas drawing, not WebView. License: GPLv3 (fine for personal tool, not distributed).
+- **No alternative needed.** jackpal/androidterm (Apache 2.0) exists but is archived and far less capable. No Compose-native terminal library exists. Custom Canvas rendering is 2-4 weeks of work to match Termux quality.
+- **MQTT client: `hannesa2/paho.mqtt.android` v3.6.4** (JitPack). Actively maintained Kotlin fork of Eclipse Paho. Built-in foreground service support via `setForegroundService(notification, id)`. **Native TCP** — connect directly to `tcp://10.43.x.x:1883`, no WebSocket wrapping needed. MQTT 3.1.1 only. If MQTT 5.0 is needed, use HiveMQ MQTT Client (`com.hivemq:hivemq-mqtt-client:1.3.12`).
+- **Gotcha: Background MQTT.** A foreground service with persistent notification can maintain MQTT connection in background, but Android Doze mode restricts network access during deep sleep windows. OEM battery killers (Samsung, Xiaomi, Huawei) may still kill it. **FCM remains essential as fallback.**
+- **Gotcha: Doze + partial wake lock.** `PARTIAL_WAKE_LOCK` keeps CPU alive but does NOT prevent network restrictions during deep Doze. MQTT keepalive may not fire with screen off on some devices.
+- **WebSocket client: OkHttp.** Best performance for Android WebSocket, native binary frame support (`ByteString`), already a standard Android dependency. 10x better CPU usage than Ktor for WebSocket workloads.
+- **Compose integration.** Wrap Termux `TerminalView` in `AndroidView` composable. Use `Canvas` + `drawText()` only if a pure-Compose terminal is needed later.
 
 ### RabbitMQ MQTT
 
@@ -493,9 +498,10 @@ interface ThrottleState {
 The push bridge:
 1. Subscribes to MQTT process-stopping topics via `mqtt.js` (internal, no WARP needed)
 2. Applies throttle/debounce logic per above rules
-3. Sends via Expo Push API: `POST https://exp.host/--/api/v2/push/send`
-4. Expo push tokens stored in SQLite (`push_tokens` table)
-5. Handles Expo push receipts — removes invalid tokens automatically
+3. Sends via **Firebase Cloud Messaging HTTP v1 API** (`POST https://fcm.googleapis.com/v1/projects/{project}/messages:send`)
+4. FCM device tokens stored in SQLite (`push_tokens` table), registered by the native Android app on launch
+5. Handles FCM error responses — removes invalid/expired tokens automatically
+6. Requires Firebase Service Account Key JSON for server-side auth (stored as K8s secret)
 
 ### 4.6 K8s & Network Configuration
 
@@ -866,253 +872,377 @@ Playback features:
 
 ---
 
-## Phase 6: React Native Mobile App
+## Phase 6: Native Android Mobile App (Kotlin/Jetpack Compose)
 
 ### 6.1 Project Setup
 
-```bash
-npx create-expo-app gwa-mobile --template blank-typescript
-cd gwa-mobile
-npx expo install mqtt expo-notifications expo-device expo-constants
-npx expo install @react-navigation/native @react-navigation/native-stack
-npx expo install react-native-screens react-native-safe-area-context
-```
+Create in Android Studio with Compose template:
 
-**Expo SDK:** 54+ (requires dev builds for notifications)
-**Build:** EAS Build (`eas build --platform android --profile development`)
+**Package:** `bar.bto.gwa`
+**Min SDK:** 26 (Android 8.0 — covers 99% of devices)
+**Target SDK:** 35
+**Build:** Gradle + Kotlin DSL
+
+**Key dependencies (`build.gradle.kts`):**
+```kotlin
+dependencies {
+    // Terminal
+    implementation("com.github.termux.termux-app:terminal-view:v0.118.0")
+    implementation("com.github.termux.termux-app:terminal-emulator:v0.118.0")
+
+    // MQTT
+    implementation("com.github.hannesa2:paho.mqtt.android:3.6.4")
+    // Or for MQTT 5.0: implementation("com.hivemq:hivemq-mqtt-client:1.3.12")
+
+    // Networking
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")  // WebSocket for terminal relay
+    implementation("com.squareup.retrofit2:retrofit:2.9.0") // REST API calls
+
+    // Firebase
+    implementation(platform("com.google.firebase:firebase-bom:33.0.0"))
+    implementation("com.google.firebase:firebase-messaging-ktx")
+
+    // Compose
+    implementation(platform("androidx.compose:compose-bom:2025.01.00"))
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.navigation:navigation-compose:2.8.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
+
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+}
+
+repositories {
+    maven("https://jitpack.io")  // For Termux + Paho
+}
+```
 
 ### 6.2 App Structure
 
 ```
-gwa-mobile/
-├── app/                          # Expo Router pages
-│   ├── _layout.tsx               # Root layout with navigation
-│   ├── index.tsx                 # Session list screen
-│   ├── session/[id].tsx          # Session detail screen
-│   ├── session/terminal.tsx      # Live terminal viewer
-│   ├── session/recording.tsx     # Recording playback
-│   └── settings.tsx              # MQTT broker config, push token
-├── src/
-│   ├── mqtt/
-│   │   ├── client.ts             # mqtt.js connection manager
-│   │   ├── topics.ts             # Topic constants and helpers
-│   │   └── reconnect.ts          # Exponential backoff reconnection
-│   ├── terminal/
-│   │   ├── relay.ts              # WebSocket connection to terminal relay
-│   │   └── xterm-html.ts         # xterm.js HTML template for WebView
-│   ├── notifications/
-│   │   ├── setup.ts              # FCM + Expo notification setup
-│   │   └── handlers.ts           # Notification tap handlers
-│   ├── api/
-│   │   ├── sessions.ts           # REST API calls to GWA
-│   │   └── answer.ts             # POST answer to blocked session
-│   ├── store/
-│   │   └── sessions.ts           # Zustand store for session state
-│   ├── components/
-│   │   ├── SessionCard.tsx        # Session list item
-│   │   ├── ActivityFeed.tsx       # Real-time activity stream
-│   │   ├── StateIndicator.tsx     # XState state visualization
-│   │   ├── TerminalViewer.tsx     # Live xterm.js WebView (Phase 5)
-│   │   ├── RecordingPlayer.tsx    # Asciicast playback WebView (Phase 5)
-│   │   ├── SnapshotViewer.tsx     # SVG snapshot display
-│   │   ├── AnswerModal.tsx        # Answer blocked session question
-│   │   └── ScreenshotViewer.tsx   # Terminal screenshot display
-│   └── types/
-│       └── events.ts             # Shared types (mirror from GWA)
-├── app.json                      # Expo config
-├── eas.json                      # EAS Build config
-└── tsconfig.json
+gwa-android/
+├── app/src/main/
+│   ├── java/bar/bto/gwa/
+│   │   ├── GwaApplication.kt              # Application class (MQTT init, FCM)
+│   │   ├── MainActivity.kt                # Single activity (Compose NavHost)
+│   │   │
+│   │   ├── data/
+│   │   │   ├── mqtt/
+│   │   │   │   ├── MqttManager.kt          # Connection manager (TCP primary, WSS fallback)
+│   │   │   │   ├── MqttForegroundService.kt # Optional always-on MQTT service
+│   │   │   │   └── TransportDetector.kt     # LAN/WARP/WSS probe logic
+│   │   │   ├── terminal/
+│   │   │   │   ├── TerminalRelayClient.kt   # OkHttp WebSocket to relay server
+│   │   │   │   └── TerminalSessionBridge.kt # Pipes WebSocket bytes → TerminalSession InputStream
+│   │   │   ├── api/
+│   │   │   │   ├── GwaApi.kt               # Retrofit interface for REST API
+│   │   │   │   └── SessionRepository.kt     # Sessions data layer
+│   │   │   └── fcm/
+│   │   │       └── GwaMessagingService.kt   # FirebaseMessagingService (FCM handler)
+│   │   │
+│   │   ├── ui/
+│   │   │   ├── navigation/
+│   │   │   │   └── NavGraph.kt             # Compose navigation graph
+│   │   │   ├── sessions/
+│   │   │   │   ├── SessionListScreen.kt    # Session list with state indicators
+│   │   │   │   ├── SessionListViewModel.kt
+│   │   │   │   └── SessionCard.kt          # List item composable
+│   │   │   ├── detail/
+│   │   │   │   ├── SessionDetailScreen.kt  # Activity feed + state + answer
+│   │   │   │   ├── SessionDetailViewModel.kt
+│   │   │   │   ├── ActivityFeed.kt         # LazyColumn of MQTT events
+│   │   │   │   └── AnswerDialog.kt         # Dialog for answering blocked session
+│   │   │   ├── terminal/
+│   │   │   │   ├── TerminalScreen.kt       # Termux TerminalView in AndroidView
+│   │   │   │   ├── TerminalViewModel.kt    # Manages WebSocket + TerminalSession
+│   │   │   │   └── RecordingScreen.kt      # Asciicast playback (WebView fallback)
+│   │   │   ├── settings/
+│   │   │   │   └── SettingsScreen.kt       # Broker config, transport status, battery guide
+│   │   │   └── components/
+│   │   │       ├── StateIndicator.kt       # Color-coded XState state chip
+│   │   │       └── SnapshotViewer.kt       # SVG/ANSI snapshot display
+│   │   │
+│   │   └── util/
+│   │       ├── NotificationHelper.kt       # Channel creation, notification building
+│   │       └── BatteryOptimization.kt      # Detect + prompt for whitelisting
+│   │
+│   ├── res/
+│   │   └── ...
+│   └── AndroidManifest.xml
+├── build.gradle.kts
+└── google-services.json                    # Firebase config
 ```
 
-### 6.3 MQTT Client Configuration (Dual-Path: WARP Primary, WSS Fallback)
+### 6.3 MQTT Connection Manager (Native TCP Primary)
 
-```typescript
-// src/mqtt/client.ts
-import mqtt from 'mqtt';
+```kotlin
+// data/mqtt/MqttManager.kt
+class MqttManager(
+    private val context: Context,
+    private val transportDetector: TransportDetector,
+) {
+    private var client: MqttAndroidClient? = null
+    private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
+    val connectionState: StateFlow<ConnectionState> = _connectionState
 
-// Dual-path connectivity
-const WARP_BROKER = 'mqtt://10.43.X.X:1883';      // Private IP via WARP (raw TCP, 8hr idle)
-const WSS_BROKER = 'wss://mqtt.bto.bar/ws';        // Public hostname (WebSocket, 100s idle)
+    sealed class ConnectionState {
+        object Disconnected : ConnectionState()
+        data class Connected(val transport: Transport) : ConnectionState()
+        data class Reconnecting(val attempt: Int) : ConnectionState()
+    }
 
-const WARP_KEEPALIVE = 300;  // 5 minutes — WARP has 8hr idle, so keepalive is relaxed
-const WSS_KEEPALIVE = 60;    // 60 seconds — must stay under Cloudflare's 100s idle timeout
-const RECONNECT_PERIOD = 3000;
+    enum class Transport { LAN_TCP, WARP_TCP, WSS }
 
-async function detectWarp(): Promise<boolean> {
-  // Attempt TCP connection to private RabbitMQ IP with 3s timeout
-  // If reachable, WARP is active and routing private traffic
-  try {
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(), 3000);
-    const response = await fetch(`http://10.43.X.X:15672/api/health/checks/alarms`, {
-      signal: controller.signal,
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
+    suspend fun connect() {
+        val transport = transportDetector.detect()  // LAN → WARP → WSS
+        val (brokerUrl, keepalive) = when (transport) {
+            Transport.LAN_TCP  -> "tcp://10.43.X.X:1883" to 300   // 5 min (direct LAN, no timeout concern)
+            Transport.WARP_TCP -> "tcp://10.43.X.X:1883" to 300   // 5 min (8hr Gateway idle)
+            Transport.WSS      -> "wss://mqtt.bto.bar/ws" to 60   // 60s (under CF 100s idle)
+        }
 
-const isWarp = await detectWarp();
-const brokerUrl = isWarp ? WARP_BROKER : WSS_BROKER;
-const keepalive = isWarp ? WARP_KEEPALIVE : WSS_KEEPALIVE;
+        client = MqttAndroidClient(context, brokerUrl, "gwa-android-${deviceId}").apply {
+            if (transport != Transport.WSS) {
+                // Optional: foreground service for background MQTT on LAN/WARP
+                setForegroundService(buildMqttNotification(), MQTT_NOTIFICATION_ID)
+            }
+        }
 
-const client = mqtt.connect(brokerUrl, {
-  protocolVersion: 5,
-  keepalive,
-  reconnectPeriod: RECONNECT_PERIOD,
-  clean: false,  // Persistent session — receive queued messages on reconnect
-  clientId: `gwa-mobile-${deviceId}`,
-  properties: {
-    sessionExpiryInterval: 3600,  // 1 hour session expiry
-  },
-});
-```
+        val options = MqttConnectOptions().apply {
+            isCleanSession = false            // Persistent session — queued messages on reconnect
+            keepAliveInterval = keepalive
+            isAutomaticReconnect = true
+            connectionTimeout = 10
+        }
 
-**On WARP disconnection:** If the WARP connection drops (e.g., Android kills VPN background), the reconnection handler detects the failure and falls back to WSS automatically. On next successful reconnect via WSS, persistent session ensures queued messages are delivered.
-
-**Subscription topics:**
-- `gwa/+/+/+/state_change` — State machine transitions (for all issues)
-- `gwa/{owner}/{repo}/{issue}/#` — All events for a specific issue (when viewing detail)
-
-**Reconnection strategy:**
-- Exponential backoff: 3s, 6s, 12s, 24s, max 60s
-- Add jitter (±20%) to prevent thundering herd
-- On reconnect failure, re-detect WARP availability and switch transport if needed
-- On reconnect, re-subscribe to active topics
-- Log disconnect reason and transport type for debugging
-
-### 6.4 Screens
-
-**Session List (index.tsx):**
-- Fetches initial session list via REST: `GET https://gwa-api.bto.bar/api/sessions`
-- Subscribes to `gwa/+/+/+/state_change` for real-time updates
-- Shows: issue number, repo, current state (color-coded), last activity time
-- Pull-to-refresh
-
-**Session Detail (session/[id].tsx):**
-- Subscribes to `gwa/{owner}/{repo}/{issue}/#` for all events
-- Sections:
-  - **State:** Current XState state with visual indicator
-  - **Activity Feed:** Real-time scrolling list of activity events
-  - **Question (if blocked):** Shows question text + answer input
-  - **Screenshot:** Latest terminal screenshot (fetched on demand)
-  - **Context:** Session metadata (branch, worktree, agent, duration)
-
-**Answer Modal:**
-- Text input for answering blocked session questions
-- Publishes answer via REST: `POST https://gwa-api.bto.bar/api/sessions/{id}/answer`
-- (REST, not MQTT, because the answer needs server-side validation and processing)
-
-### 6.5 Push Notification Setup
-
-```typescript
-// src/notifications/setup.ts
-import * as Notifications from 'expo-notifications';
-import * as Device from 'expo-device';
-
-async function registerForPushNotifications() {
-  if (!Device.isDevice) return null; // Emulators can't receive push
-
-  const { status } = await Notifications.requestPermissionsAsync();
-  if (status !== 'granted') return null;
-
-  // Create notification channel (required for Android 8+)
-  await Notifications.setNotificationChannelAsync('gwa-alerts', {
-    name: 'GWA Alerts',
-    importance: Notifications.AndroidImportance.HIGH,
-    vibrationPattern: [0, 250, 250, 250],
-  });
-
-  const token = await Notifications.getExpoPushTokenAsync({
-    projectId: Constants.expoConfig?.extra?.eas?.projectId,
-  });
-
-  // Register token with GWA backend
-  await fetch('https://gwa-api.bto.bar/api/push-tokens', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: token.data, platform: 'android' }),
-  });
-
-  return token;
+        client?.connect(options)
+        _connectionState.value = ConnectionState.Connected(transport)
+    }
 }
 ```
 
-### 6.6 Notification Strategy: Process-Stopping Events Only
+**Transport detection (`TransportDetector.kt`):**
+```kotlin
+class TransportDetector {
+    suspend fun detect(): MqttManager.Transport {
+        // 1. Try direct TCP to RabbitMQ management API (works on LAN and WARP)
+        if (probePrivateIp("10.43.X.X", 15672, timeoutMs = 2000)) {
+            return if (isOnLocalWifi()) Transport.LAN_TCP else Transport.WARP_TCP
+        }
+        // 2. Fallback to WebSocket through Cloudflare tunnel
+        return Transport.WSS
+    }
 
-**Principle:** Only events that halt a session's progress and require human action generate push notifications. Everything else is synced when the app returns to foreground.
-
-#### Push Notification Categories (Background)
-
-| Event | Priority | Title | Body | Action |
-|-------|----------|-------|------|--------|
-| `blocked` | **High** | "#{issue}: Question" | First 100 chars of question | Tap → Answer Modal |
-| `error` | **High** | "#{issue}: Error" | Error message | Tap → Session Detail |
-| `complete` | Default | "#{issue}: Complete" | "PR merged" / "Done" summary | Tap → Session Detail |
-
-These are the **only** events pushed. All three share the trait that the session has stopped making progress.
-
-#### NOT Pushed (Foreground Sync Only)
-
-| Event | Reason |
-|-------|--------|
-| `state_change` | Informational — session is still progressing, no action needed |
-| `activity` | Streaming output — only meaningful in real-time UI context |
-| `screenshot` | Large payload, only useful when actively viewing session |
-
-#### Android Notification Channels
-
-```typescript
-// High-priority channel for process-stopping events
-await Notifications.setNotificationChannelAsync('gwa-action-required', {
-  name: 'Action Required',
-  importance: Notifications.AndroidImportance.HIGH,
-  vibrationPattern: [0, 250, 250, 250],
-  sound: 'default',
-  groupId: 'gwa-alerts',
-});
-
-// Default channel for completions
-await Notifications.setNotificationChannelAsync('gwa-completions', {
-  name: 'Completions',
-  importance: Notifications.AndroidImportance.DEFAULT,
-  sound: 'default',
-  groupId: 'gwa-alerts',
-});
+    private fun isOnLocalWifi(): Boolean {
+        // Check if current WiFi SSID matches homelab network
+        // or if gateway IP matches known homelab router
+    }
+}
 ```
 
-#### Throttling (Handled by Push Bridge, see Phase 4.5)
+### 6.4 Live Terminal Viewer (Termux TerminalView)
 
-- **Per-session debounce:** 30 seconds (collapse rapid events from same session)
-- **Global rate limit:** Max 5 notifications/minute (queue overflow)
-- **Per-session cooldown:** 5 minutes (prevent same session spamming)
-- **Android grouping:** Collapsed summary when 3+ unread ("3 sessions need attention")
+```kotlin
+// ui/terminal/TerminalScreen.kt
+@Composable
+fun TerminalScreen(sessionId: String, viewModel: TerminalViewModel = viewModel()) {
+    val terminalSession = viewModel.terminalSession
 
-#### Foreground Resume Sync
+    AndroidView(
+        factory = { context ->
+            TerminalView(context, null).apply {
+                setTextSize(24)  // Adjustable
+                attachSession(terminalSession)
+                // Read-only: override onTouchEvent to disable keyboard
+                setOnKeyListener { _, _, _ -> true }
+            }
+        },
+        modifier = Modifier.fillMaxSize()
+    )
 
-When the app returns from background to foreground:
+    LaunchedEffect(sessionId) {
+        viewModel.connectToRelay(sessionId)
+    }
+}
 
-```typescript
-// src/mqtt/client.ts — AppState listener
-import { AppState } from 'react-native';
+// ui/terminal/TerminalViewModel.kt
+class TerminalViewModel : ViewModel() {
+    private val okHttpClient = OkHttpClient.Builder()
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
 
-AppState.addEventListener('change', (nextState) => {
-  if (nextState === 'active') {
-    // 1. MQTT persistent session delivers queued messages automatically
-    //    (clean: false ensures RabbitMQ queued messages during disconnect)
+    // Bridge: WebSocket bytes → PipedOutputStream → TerminalSession InputStream
+    private val pipedOutput = PipedOutputStream()
+    private val pipedInput = PipedInputStream(pipedOutput, 65536)
 
-    // 2. Fetch latest state from REST API as a consistency check
-    //    This catches anything missed if MQTT session expired
-    syncSessionsFromAPI();
+    val terminalSession = TerminalSession(
+        /* processId */ -1,
+        /* fd */ pipedInput.fd,  // Simplified — actual impl uses FileDescriptor bridge
+        /* transcript rows */ 5000,
+        /* columns */ 200,
+        /* rows */ 50,
+        /* client */ terminalClient
+    )
 
-    // 3. Re-detect WARP availability (VPN may have toggled)
-    reconnectWithTransportDetection();
-  }
-});
+    fun connectToRelay(sessionId: String) {
+        val relayUrl = "ws://10.43.X.X:8080/stream/$sessionId"  // or wss:// if remote
+        val request = Request.Builder().url(relayUrl).build()
+
+        okHttpClient.newWebSocket(request, object : WebSocketListener() {
+            override fun onMessage(ws: WebSocket, bytes: ByteString) {
+                // Raw PTY bytes → pipe directly to terminal emulator
+                pipedOutput.write(bytes.toByteArray())
+                pipedOutput.flush()
+            }
+            override fun onMessage(ws: WebSocket, text: String) {
+                // Mid-stream join snapshot (JSON)
+                val msg = JSONObject(text)
+                if (msg.getString("type") == "snapshot") {
+                    pipedOutput.write(msg.getString("data").toByteArray())
+                    pipedOutput.flush()
+                }
+            }
+        })
+    }
+}
 ```
 
-The MQTT persistent session (`clean: false`) is the primary sync mechanism — RabbitMQ queues messages during disconnect and delivers them in FIFO order on reconnect. The REST API call is a safety net in case the MQTT session expired (default: 1 hour).
+**Key advantage over xterm.js WebView:** Termux `TerminalView` renders via direct Canvas drawing with hardware acceleration. No JavaScript engine, no WebView process, no bridge overhead. Full 200 columns at native performance.
+
+### 6.5 Push Notifications (Direct FCM)
+
+```kotlin
+// data/fcm/GwaMessagingService.kt
+class GwaMessagingService : FirebaseMessagingService() {
+
+    override fun onNewToken(token: String) {
+        // Register token with GWA backend
+        CoroutineScope(Dispatchers.IO).launch {
+            GwaApi.registerPushToken(token, platform = "android")
+        }
+    }
+
+    override fun onMessageReceived(message: RemoteMessage) {
+        val data = message.data
+        val eventType = data["eventType"] ?: return
+        val issueNumber = data["issueNumber"] ?: return
+        val sessionId = data["sessionId"] ?: return
+
+        val notification = when (eventType) {
+            "blocked" -> buildNotification(
+                channel = CHANNEL_ACTION_REQUIRED,
+                title = "#$issueNumber: Question",
+                body = data["question"]?.take(100) ?: "Agent needs input",
+                intent = deepLink("gwa://session/$sessionId/answer"),
+            )
+            "error" -> buildNotification(
+                channel = CHANNEL_ACTION_REQUIRED,
+                title = "#$issueNumber: Error",
+                body = data["error"] ?: "Session failed",
+                intent = deepLink("gwa://session/$sessionId"),
+            )
+            "complete" -> buildNotification(
+                channel = CHANNEL_COMPLETIONS,
+                title = "#$issueNumber: Complete",
+                body = data["summary"] ?: "Session finished",
+                intent = deepLink("gwa://session/$sessionId"),
+            )
+            else -> return
+        }
+
+        NotificationManagerCompat.from(this).notify(sessionId.hashCode(), notification)
+    }
+}
+```
+
+**Notification channels (created in `GwaApplication.onCreate()`):**
+```kotlin
+// Action Required — high priority, vibrate, sound
+NotificationChannel("gwa-action-required", "Action Required", IMPORTANCE_HIGH).apply {
+    vibrationPattern = longArrayOf(0, 250, 250, 250)
+    setGroup("gwa-alerts")
+}
+
+// Completions — default priority
+NotificationChannel("gwa-completions", "Completions", IMPORTANCE_DEFAULT).apply {
+    setGroup("gwa-alerts")
+}
+```
+
+### 6.6 Notification Strategy (Same as Before, Native Implementation)
+
+**Process-stopping events only:** `blocked`, `error`, `complete`. Everything else syncs via MQTT on foreground return.
+
+**Throttling:** Still handled server-side by the push bridge (Phase 4.5). The server sends FCM messages directly (not through Expo Push API) — simpler, one fewer hop.
+
+**Foreground/background lifecycle:**
+
+```kotlin
+// In MainActivity or LifecycleObserver
+class AppLifecycleObserver(
+    private val mqttManager: MqttManager,
+    private val sessionRepo: SessionRepository,
+) : DefaultLifecycleObserver {
+
+    override fun onStart(owner: LifecycleOwner) {
+        // App came to foreground
+        // 1. MQTT persistent session auto-delivers queued messages
+        // 2. Safety net: sync from REST API in case MQTT session expired
+        CoroutineScope(Dispatchers.IO).launch {
+            sessionRepo.syncFromApi()
+        }
+        // 3. Re-detect transport (WiFi may have changed)
+        mqttManager.reconnectWithTransportDetection()
+    }
+
+    override fun onStop(owner: LifecycleOwner) {
+        // App went to background
+        // If user enabled "always-on" mode → MQTT stays via foreground service
+        // Otherwise → MQTT disconnects, FCM handles critical notifications
+    }
+}
+```
+
+### 6.7 Recording Playback
+
+For asciicast recording playback, use a WebView with asciinema-player (same approach as before — this is one area where a WebView is fine since it's non-interactive playback):
+
+```kotlin
+@Composable
+fun RecordingScreen(recordingUrl: String) {
+    AndroidView(factory = { context ->
+        WebView(context).apply {
+            settings.javaScriptEnabled = true
+            loadDataWithBaseURL(null, asciinemaPlayerHtml(recordingUrl), "text/html", "UTF-8", null)
+        }
+    })
+}
+```
+
+### 6.8 Settings Screen — Battery & Transport
+
+The Settings screen includes:
+- **Transport status:** Shows current connection (LAN TCP / WARP TCP / WSS) with latency
+- **Always-on MQTT:** Toggle for foreground service (persistent notification, background MQTT)
+- **Battery optimization:** Detect if app is battery-optimized → prompt user to whitelist
+- **WARP status:** Check if Cloudflare One agent is installed and connected
+- **Broker config:** Override private IP, port, WSS URL (for testing)
+
+```kotlin
+@Composable
+fun BatteryOptimizationCard() {
+    val isOptimized = isBatteryOptimized(LocalContext.current)
+    if (isOptimized) {
+        Card {
+            Text("Battery optimization is enabled for GWA.")
+            Text("This may prevent background MQTT and notifications from working reliably.")
+            Button(onClick = { requestBatteryWhitelist() }) {
+                Text("Disable Battery Optimization")
+            }
+        }
+    }
+}
+```
 
 ---
 
@@ -1328,39 +1458,42 @@ Document all v4.0 changes.
 - [ ] 5.20 Run `bun run typecheck` — verify clean
 - [ ] 5.21 Run `bun test` — verify all pass
 
-### Phase 6: React Native Mobile App
-- [ ] 6.1 Create Expo project with TypeScript template
-- [ ] 6.2 Install dependencies: `mqtt`, `expo-notifications`, `expo-device`, navigation, `react-native-webview`
-- [ ] 6.3 Configure `app.json` with Android package name, FCM
-- [ ] 6.4 Add `google-services.json` for FCM
-- [ ] 6.5 Create dual-path MQTT client (WARP detection → native TCP or WSS fallback)
-- [ ] 6.6 Implement WARP availability detection via private IP health check
-- [ ] 6.7 Implement exponential backoff with jitter + transport failover on reconnect
-- [ ] 6.8 Create Zustand store for session state management
-- [ ] 6.9 Build Session List screen (index.tsx)
-- [ ] 6.10 Build Session Detail screen with activity feed
-- [ ] 6.11 Build TerminalViewer component (xterm.js in WebView + relay WebSocket)
-- [ ] 6.12 Build RecordingPlayer component (asciinema-player in WebView)
-- [ ] 6.13 Build SnapshotViewer component (SVG display)
-- [ ] 6.14 Build Answer Modal for blocked sessions
-- [ ] 6.15 Build State Indicator component (color-coded states)
-- [ ] 6.16 Add live terminal tab to Session Detail screen
-- [ ] 6.17 Add recording playback screen for completed sessions
-- [ ] 6.18 Set up Expo notifications with two channels (action-required + completions)
-- [ ] 6.19 Register push token with GWA backend on app launch
-- [ ] 6.20 Handle notification taps — navigate to correct session/answer modal
-- [ ] 6.21 Implement AppState foreground resume sync (MQTT queue + REST safety net)
-- [ ] 6.22 Configure EAS Build for development and production profiles
-- [ ] 6.23 Build APK with `eas build --platform android`
-- [ ] 6.24 Test on physical Android device — WARP path (native TCP)
-- [ ] 6.25 Test on physical Android device — WSS fallback path
-- [ ] 6.26 Test live terminal viewer — LAN latency, scrollback, colors
-- [ ] 6.27 Test recording playback — speed control, idle compression, seeking
-- [ ] 6.28 Test push notifications — only blocked/error/complete arrive
-- [ ] 6.29 Test notification throttling — concurrent sessions don't flood
-- [ ] 6.30 Test foreground resume sync — missed messages appear in UI
-- [ ] 6.31 Test WARP→WSS failover — kill WARP, verify automatic fallback
-- [ ] 6.32 Install + configure Cloudflare One agent on test device
+### Phase 6: Native Android App (Kotlin/Jetpack Compose)
+- [ ] 6.1 Create Android Studio project with Compose template (`bar.bto.gwa`)
+- [ ] 6.2 Add JitPack repo + Termux terminal-view/emulator dependencies
+- [ ] 6.3 Add Paho MQTT Android + OkHttp + Retrofit + Firebase dependencies
+- [ ] 6.4 Add `google-services.json` for Firebase
+- [ ] 6.5 Create `TransportDetector` — LAN probe → WARP probe → WSS fallback
+- [ ] 6.6 Create `MqttManager` — native TCP primary, WSS fallback, auto-reconnect
+- [ ] 6.7 Create `MqttForegroundService` — optional always-on background MQTT
+- [ ] 6.8 Create `TerminalRelayClient` — OkHttp WebSocket to relay server
+- [ ] 6.9 Create `TerminalSessionBridge` — pipe WebSocket bytes → Termux TerminalSession InputStream
+- [ ] 6.10 Build `TerminalScreen` — Termux TerminalView in AndroidView (read-only, 200x50)
+- [ ] 6.11 Build `TerminalViewModel` — manages WebSocket connection + mid-stream join
+- [ ] 6.12 Build `SessionListScreen` + ViewModel — REST initial load + MQTT real-time updates
+- [ ] 6.13 Build `SessionDetailScreen` + ViewModel — activity feed + state indicator
+- [ ] 6.14 Build `AnswerDialog` — answer blocked session questions via REST
+- [ ] 6.15 Build `StateIndicator` — color-coded XState state chip composable
+- [ ] 6.16 Build `SnapshotViewer` — SVG/ANSI snapshot display
+- [ ] 6.17 Build `RecordingScreen` — asciinema-player in WebView
+- [ ] 6.18 Build `SettingsScreen` — transport status, always-on toggle, battery guide
+- [ ] 6.19 Create `GwaMessagingService` — FirebaseMessagingService for FCM
+- [ ] 6.20 Create notification channels (action-required + completions) in Application.onCreate
+- [ ] 6.21 Handle notification deep links — navigate to session/answer dialog
+- [ ] 6.22 Implement `AppLifecycleObserver` — foreground sync (MQTT queue + REST safety net)
+- [ ] 6.23 Implement `BatteryOptimization` helper — detect + prompt for whitelisting
+- [ ] 6.24 Add Compose navigation graph with deep link support
+- [ ] 6.25 Build signed APK (or use Android Studio direct install for dev)
+- [ ] 6.26 Test on physical device — LAN TCP path (verify native TCP, no WebSocket)
+- [ ] 6.27 Test on physical device — WARP TCP path (Cloudflare One agent)
+- [ ] 6.28 Test on physical device — WSS fallback (disable WARP, verify auto-switch)
+- [ ] 6.29 Test live terminal — 200 cols, truecolor, scrollback, cursor
+- [ ] 6.30 Test recording playback — speed control, idle compression
+- [ ] 6.31 Test FCM push — only blocked/error/complete arrive
+- [ ] 6.32 Test notification throttling — concurrent sessions don't flood
+- [ ] 6.33 Test foreground resume sync — missed MQTT messages appear
+- [ ] 6.34 Test foreground service MQTT — verify connection survives screen-off
+- [ ] 6.35 Test battery optimization whitelist prompt
 
 ### Phase 7: REST API
 - [ ] 7.1 Create `src/api/handler.ts` with Bun.serve
@@ -1441,10 +1574,12 @@ Document all v4.0 changes.
 | SQLite BUSY under concurrent writes | Low | Medium | 5s busy_timeout + BEGIN IMMEDIATE + short transactions |
 | OEM battery optimization kills push + WARP | Medium | Medium | Document manual whitelist steps in app settings; app detects and prompts user to whitelist |
 | MQTT session expires during long background | Low | Medium | REST API safety net on foreground resume catches anything MQTT session missed |
-| React Native mqtt.js Expo Metro resolution | Low | Low | Fixed in Expo SDK 54+; use `unstable_enablePackageExports` if needed |
+| Termux terminal-view GPLv3 license | Low | Low | Personal tool, not distributed; no license concern. jackpal (Apache 2.0) available as fallback |
+| Paho MQTT Android lacks MQTT 5.0 | Low | Low | MQTT 3.1.1 sufficient for our pub/sub; HiveMQ client available if 5.0 needed |
+| Android Doze blocks foreground service MQTT | Medium | Low | FCM push bridge as fallback; foreground service is optional "always-on" mode |
 | XState history state bug (#5178) | Low | Low | We use context.previousState instead of XState history states |
 | WARP battery drain on some devices | Medium | Low | Monitor reports; 5-minute keepalive on WARP path (vs 60s on WSS) reduces radio wake-ups |
-| xterm.js 200+ cols slow on Android WebView | High | Low | Mobile viewer limited to 120 cols; pod terminal stays at 200x50; snapshots preserve full width |
+| Terminal rendering performance | N/A | N/A | **Eliminated.** Termux terminal-view uses native Canvas — handles 200x50 at 60fps. No WebView. |
 | tmux pipe-pane single consumer limit | Low | Low | Relay process fans out via WebSocket pub/sub; one FIFO reader, many WebSocket viewers |
 | Asciicast recordings fill Longhorn PVC | Low | Medium | Auto-compress after 7 days, auto-delete after 30; typical session is 5-10MB uncompressed |
 | Named FIFO orphan on crash | Low | Low | Cleanup on relay startup: remove stale FIFOs from /tmp; session cleanup also removes them |
