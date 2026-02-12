@@ -5,7 +5,7 @@
 
 ## Overview
 
-This plan upgrades GWA from a lookup-table state machine with dual persistence to a formally verified XState state machine with SQLite-only persistence, real-time MQTT streaming to a React Native (Expo) mobile app, and hardened webhook handling.
+This plan upgrades GWA from a lookup-table state machine with dual persistence to a formally verified XState state machine with SQLite-only persistence, real-time MQTT streaming to a native Android app, and hardened webhook handling.
 
 ### Architecture After v4.0
 
@@ -1583,3 +1583,297 @@ Document all v4.0 changes.
 | tmux pipe-pane single consumer limit | Low | Low | Relay process fans out via WebSocket pub/sub; one FIFO reader, many WebSocket viewers |
 | Asciicast recordings fill Longhorn PVC | Low | Medium | Auto-compress after 7 days, auto-delete after 30; typical session is 5-10MB uncompressed |
 | Named FIFO orphan on crash | Low | Low | Cleanup on relay startup: remove stale FIFOs from /tmp; session cleanup also removes them |
+
+---
+
+## Gap Analysis (Measure Twice, Cut Once)
+
+**Date:** February 12, 2026
+**Method:** Full codebase audit against plan assumptions
+
+### GAP 1: Redis Removal Scope Severely Underestimated (BLOCKER)
+
+**Plan assumption:** Phase 3.1 says Redis usage is limited to `src/lib/redis.ts` with 4 functions (`getSession`, `createSession`, `podActivePrs`, `closeRedis`).
+
+**Reality:** Redis is deeply embedded in **21 files** across the codebase:
+
+| File | Redis Usage |
+|------|-------------|
+| `src/lib/redis.ts` | 190-line module with 12 exported functions (sessions + questions + cleanup) |
+| **`src/lib/repl-session.ts`** | **6 direct `getRedisClient()` calls** — entire REPL session lifecycle (store, load, update, delete, TTL refresh, reverse-lookup by window). 514 lines, ALL state in Redis |
+| `src/orchestrate.ts` | Heavy usage: `getSession`, `createSession`, `updateSessionStatus`, `closeRedis` + `Metrics.recordRedisOperation` calls |
+| `src/health-check.ts` | `redis.getRedisClient()` for health check + `closeRedis` cleanup |
+| `src/debug-redis.ts` | Entire debugging tool — scans all Redis keys, displays sessions/questions |
+| `src/lib/telemetry.ts` | `IORedisInstrumentation` auto-instrumentation + `recordRedisOperation` metric |
+| `src/tests/imports.test.ts` | Validates `redis.getRedisClient` and `redis.closeRedis` exports |
+| `src/tests/preflight.test.ts` | Asserts `ioredis` dependency exists in `package.json` |
+| `tests/helm-chart.test.ts` | Validates `REDIS_HOST` and `REDIS_PORT` env vars in Helm templates |
+| `helm/gwa-runner/values.yaml` | `redis.host` and `redis.port` config values |
+| `helm/gwa-runner/templates/configmap.yaml` | `redis-cli` commands: pod registration (`SET repo:X:pod`) + tmux status window (`SMEMBERS`) |
+| `helm/gwa-runner/templates/statefulset.yaml` | `REDIS_HOST` and `REDIS_PORT` env vars |
+| `helm/gwa-runner/templates/cronjob-cleanup.yaml` | `REDIS_HOST` and `REDIS_PORT` env vars |
+| `k8s/gwa-cleanup-cronjob.yaml` | `REDIS_HOST` and `REDIS_PORT` env vars |
+| `package.json` | `ioredis` dep + `@opentelemetry/instrumentation-ioredis` dep + `build:debug-redis` script |
+
+**Impact:** Phase 3 checklist is missing ~15 action items. The plan must add:
+- [ ] 3.x Migrate `src/lib/repl-session.ts` — move ALL REPL state (store, load, update, delete, TTL, reverse-lookup) from Redis to SQLite
+- [ ] 3.x Add `repl_sessions` table to schema (or extend `sessions` table with REPL-specific fields)
+- [ ] 3.x Update `src/orchestrate.ts` — replace all 8 Redis calls with SQLite equivalents
+- [ ] 3.x Update `src/health-check.ts` — remove Redis health check, add SQLite health check
+- [ ] 3.x Delete `src/debug-redis.ts` or rewrite as `src/debug-db.ts`
+- [ ] 3.x Remove `build:debug-redis` script from `package.json`
+- [ ] 3.x Remove `IORedisInstrumentation` from `src/lib/telemetry.ts`
+- [ ] 3.x Remove `@opentelemetry/instrumentation-ioredis` from `package.json`
+- [ ] 3.x Remove `Metrics.recordRedisOperation` method from telemetry
+- [ ] 3.x Update Helm chart `values.yaml` — remove `redis` section
+- [ ] 3.x Update Helm `configmap.yaml` — replace `redis-cli SET` pod registration with SQLite insert, replace tmux status window `redis-cli SMEMBERS` with `sqlite3` query
+- [ ] 3.x Update Helm `statefulset.yaml` — remove `REDIS_HOST`/`REDIS_PORT` env vars
+- [ ] 3.x Update Helm `cronjob-cleanup.yaml` — remove Redis env vars
+- [ ] 3.x Update `k8s/gwa-cleanup-cronjob.yaml` — remove Redis env vars
+- [ ] 3.x Update `tests/helm-chart.test.ts` — remove Redis env var assertions
+- [ ] 3.x Update `src/tests/preflight.test.ts` — remove `ioredis` dependency assertion
+
+### GAP 2: `src/lib/repl-session.ts` Not Mentioned in Plan (BLOCKER)
+
+**Plan assumption:** Does not reference this file at all.
+
+**Reality:** This is a 514-line module that manages the entire Claude REPL lifecycle using Redis exclusively:
+- `storeSession()` → Redis HSET with 24h TTL
+- `loadSession()` → Redis HGETALL
+- `updateSessionStatus()` → Redis HSET
+- `deleteSession()` → Redis DEL (session + reverse window lookup)
+- `sendToREPL()` → refreshes Redis TTL on every interaction
+- `getSessionByWindow()` → Redis GET (reverse lookup: window → sessionId)
+
+This module has **NO SQLite usage**. All state is in Redis. The XState migration and Redis removal must account for this parallel state system.
+
+**Fix:** Add explicit plan items for migrating `repl-session.ts` to SQLite, or consolidating its functionality into the XState-managed session lifecycle.
+
+### GAP 3: Two Parallel State Systems (ARCHITECTURE CONCERN)
+
+**Plan assumption:** Redis handles session state, SQLite is secondary.
+
+**Reality:** Both systems track sessions simultaneously:
+- **Redis** (`redis.ts` + `repl-session.ts`): `PRSession` with tmux_window, status, pod_name + `REPLSession` with sessionId, tmuxWindow, status
+- **SQLite** (`db.ts`): `sessions` table with id, status, tmux_window, repl_pid, repl_active
+
+The transition handlers (`start-planning.ts`, `inject-prompt.ts`, etc.) use **SQLite exclusively**. But `orchestrate.ts` and `repl-session.ts` use **Redis exclusively** for their session tracking.
+
+**Impact:** During migration, we must identify which system is the source of truth for each operation and consolidate carefully. Some operations may be duplicated between the two systems.
+
+### GAP 4: Webhook Handler Architecture Mismatch (DESIGN FIX NEEDED)
+
+**Plan assumption (Phase 2.4):** "Replace the transitionHandlers lookup table with: Load or create XState actor for the issue. Map column transition to XState event. Send event to actor."
+
+**Reality:** The webhook handler runs in a **separate pod** (`gwa-webhook` via `Dockerfile.webhook`). It does NOT run handlers in-process. Instead, it:
+1. Receives GitHub webhook → maps column transition to handler name
+2. Calls GitHub `workflow_dispatch` API with handler name + metadata
+3. GitHub Actions runner → `kubectl exec` into `gwa-runner-0` pod → runs handler binary
+
+The XState actor **cannot live in the webhook pod** — it needs SQLite access on the runner pod's PVC.
+
+**Fix:** XState integration should happen at the **runner pod level**, not in the webhook handler. Options:
+- **Option A:** Webhook keeps its lookup table. Runner-side handlers load/validate/transition XState on entry.
+- **Option B:** Add a thin HTTP endpoint on the runner pod that webhook calls directly (bypassing GitHub Actions). Webhook sends the transition, runner validates via XState, then dispatches handler.
+- **Option C (recommended):** Keep webhook dispatch as-is. Each transition handler on the runner side validates the transition against XState before executing. This preserves the existing architecture and adds XState as a validation layer.
+
+### GAP 5: No RabbitMQ Exists in K3s Cluster (PREREQUISITE)
+
+**Plan assumption (architecture diagram):** "RabbitMQ (existing K3s)"
+
+**Reality:** Zero RabbitMQ references anywhere in the codebase, K8s manifests, or Helm charts. No AMQP, MQTT, or message queue configuration exists. The only references to RabbitMQ/MQTT are in `PLAN_V4.md` itself.
+
+**Fix:** Add a **Phase 0** or **Phase 4 prerequisite** for RabbitMQ deployment:
+- [ ] Deploy RabbitMQ to K3s (Helm chart: `bitnami/rabbitmq` or `rabbitmq/rabbitmq-operator`)
+- [ ] Enable plugins: `rabbitmq_mqtt`, `rabbitmq_web_mqtt`, `rabbitmq_management`
+- [ ] Configure K8s Service exposing ports 5672 (AMQP), 1883 (MQTT), 15675 (WebSocket MQTT), 15672 (management)
+- [ ] Create RabbitMQ credentials as K8s secret
+- [ ] Verify MQTT connectivity from within the cluster
+- [ ] Verify `rabbitmq_mqtt` topic routing (MQTT `/` → AMQP `.`)
+
+### GAP 6: Phase 5.5 and 5.6 Still Show React Native Code (STALE)
+
+**Plan assumption:** Phase 6 replaced React Native with native Android.
+
+**Reality:** Phase 5.5 (lines 764–841) still contains React Native/WebView code (`TerminalViewer.tsx`, `react-native-webview`, xterm.js). Phase 5.6 (lines 847–865) still shows a React Native `RecordingPlayer.tsx`. These sections are stale — Phase 6.4 and 6.7 have the correct native Android replacements.
+
+**Fix:** Remove/update Phase 5.5 and 5.6 to reference the native Android implementations in Phase 6 instead of duplicating stale React Native code.
+
+### GAP 7: Checklist Items Reference Expo (Should Be FCM)
+
+- **Item 4.11:** "Implement Expo push receipt handling — auto-remove invalid tokens" → Should be "Implement **FCM** error response handling — auto-remove invalid/expired tokens"
+- **Architecture diagram line 66–67:** "MQTT → Expo / Push API" → Should be "MQTT → FCM / HTTP v1 API"
+
+### GAP 8: Helm Chart Not Mentioned in Plan (INFRASTRUCTURE GAP)
+
+**Plan assumption:** Only mentions K8s manifest updates (`k8s/gwa-runner-statefulset.yaml`).
+
+**Reality:** A full Helm chart exists at `helm/gwa-runner/` with templates for StatefulSet, ConfigMap, CronJob, Service, RBAC, and values. The plan must update Helm chart alongside raw K8s manifests:
+- `values.yaml` — remove `redis` section, add `rabbitmq.url`, `terminalRelay.port`, `api.port`
+- `configmap.yaml` — replace `redis-cli` commands with SQLite equivalents
+- `statefulset.yaml` — add `RABBITMQ_URL` env, remove Redis envs
+- `cronjob-cleanup.yaml` — remove Redis env vars
+
+### GAP 9: Dockerfile Updates Missing (BUILD GAP)
+
+**Plan assumption:** Checklist items 7.12–7.13 mention API build target and Dockerfile but don't cover all new services.
+
+**Reality:** The Dockerfile needs updates for:
+- Terminal relay service (`src/lib/terminal-relay.ts`) — new build target + binary
+- Push bridge (`src/lib/push-bridge.ts`) — new build target + binary
+- API handler (`src/api/handler.ts`) — new build target + binary
+- New npm dependencies: `xstate`, `amqplib`, `ansi-to-svg`, `mqtt` (for push bridge)
+- Port exposure: 8080 (terminal relay), 3001 (API)
+
+**Fix:** Add checklist items:
+- [ ] Add `build:terminal-relay` script to `package.json`
+- [ ] Add `build:push-bridge` script to `package.json`
+- [ ] Update Dockerfile to build and COPY all new binaries
+- [ ] Expose ports 8080 and 3001 in StatefulSet/Dockerfile
+
+### GAP 10: `ansi-to-svg` Bun Compatibility Not Verified
+
+**Plan assumption (Phase 5.8):** Uses `ansi-to-svg` npm package for SVG snapshot generation.
+
+**Reality:** The `ansi-to-svg` package (v1.1.1) was last published in 2019. It uses CommonJS (`require()`) and depends on `ansi-to-html` which uses DOM-like APIs. Bun's CommonJS compatibility has improved but edge cases exist with older packages.
+
+**Fix:** Before Phase 5, verify `ansi-to-svg` works with Bun:
+```bash
+bun add ansi-to-svg && echo '\x1b[32mHello\x1b[0m' | bun -e "const a2s = require('ansi-to-svg'); console.log(a2s('test'))"
+```
+Fallback: use `ansi-to-html` (actively maintained, lighter) + wrap in SVG `<foreignObject>`.
+
+### GAP 11: OpenTelemetry Instrumentation Gap After Redis Removal
+
+**Current:** `src/lib/telemetry.ts` auto-instruments Redis via `IORedisInstrumentation`. After removing ioredis, this instrumentation breaks.
+
+**Fix:**
+- [ ] Remove `IORedisInstrumentation` from telemetry initialization
+- [ ] Remove `@opentelemetry/instrumentation-ioredis` from `package.json`
+- [ ] Remove `Metrics.recordRedisOperation()` method and all call sites
+- [ ] Consider: add manual SQLite operation spans (no Bun SQLite auto-instrumentation exists)
+
+### GAP 12: Session Status Enum Mismatch
+
+**Redis types (`types.ts`):** `PRSession.status` = `"active" | "waiting" | "completed" | "error"`
+**REPL types (`repl-session.ts`):** `REPLSession.status` = `"starting" | "running" | "waiting" | "completed" | "error"`
+**SQLite sessions table (`db.ts`):** `status` field is free text — uses `"pending"`, `"running"`, `"blocked"`, `"starting"`, `"complete"`, `"error"`, `"interrupted"`, `"cancelled"`
+**XState plan:** States are `todo`, `planning`, `inProgress`, `qa`, `blocked`, `review`, `done`
+
+**Impact:** Four different status enums. The XState migration must define a single canonical set and map existing data.
+
+**Fix:** Add a migration mapping to Phase 2:
+- `active` → `inProgress`
+- `waiting` → `blocked`
+- `completed`/`complete` → `done`
+- `starting`/`pending` → `todo`
+- `running` → `inProgress`
+
+### GAP 13: `tmux capture-pane -e` Flag Behavior
+
+**Plan assumption (Phase 5):** Uses `capture-pane -e -p` to capture ANSI escape sequences.
+
+**Reality:** The existing `capturePane()` in `src/lib/tmux.ts` does NOT use `-e` flag — it captures plain text only (line 145–153). The `-e` flag preserves escape sequences but increases output size significantly and may include non-printable characters that need careful handling.
+
+**Impact:** Minor — just needs the `-e` flag added when capturing for snapshots. The existing plain-text captures should continue to work for non-snapshot use cases.
+
+### GAP 14: Missing Recordings Storage Path in PVC
+
+**Plan assumption:** Recordings stored at `/home/runner/recordings/pr-{N}.cast`
+
+**Reality:** Current PVC mount structure:
+- `/home/runner/.claude` (10Gi) — Claude session data
+- `/home/runner/worktrees` (30Gi) — git worktrees
+- `/home/runner/repo` (10Gi) — main repo
+
+No `/home/runner/recordings` mount exists. Recordings need to go on an existing PVC or a new one.
+
+**Fix:** Either:
+- Store recordings under `/home/runner/.claude/recordings/` (on existing 10Gi PVC — may need size increase)
+- Add a new PVC for recordings in the StatefulSet volumeClaimTemplates
+
+### GAP 15: Firebase Service Account Key Storage
+
+**Plan assumption (Phase 4.5):** "Requires Firebase Service Account Key JSON for server-side auth (stored as K8s secret)"
+
+**Reality:** No Firebase configuration exists in the cluster. Need to:
+- [ ] Create Firebase project (if not exists)
+- [ ] Generate service account key JSON
+- [ ] Create K8s secret: `kubectl create secret generic firebase-sa --from-file=firebase-sa.json`
+- [ ] Mount secret in runner StatefulSet
+- [ ] Add `GOOGLE_APPLICATION_CREDENTIALS` env var pointing to mounted key
+
+### GAP 16: Port Conflicts and Service Exposure
+
+**Plan assumption:** Terminal relay on 8080, API on 3001.
+
+**Reality:** Current services only expose port 22 (SSH). The headless Service (`gwa-runner-service.yaml`) needs additional ports, and the Helm chart service template needs updating.
+
+**Fix:**
+- [ ] Add ports 8080 (terminal-relay) and 3001 (api) to runner Service
+- [ ] Add Cloudflare tunnel routes for both services
+- [ ] Ensure no conflict with existing services in the cluster on these ports
+
+### GAP 17: ConfigMap Init Script Uses `redis-cli` Directly
+
+The Helm ConfigMap (`entrypoint.sh`) runs:
+```bash
+redis-cli -h "${REDIS_HOST}" -p "${REDIS_PORT}" SET "repo:${REPO}:pod" "${POD_NAME}" EX 604800
+```
+and the tmux status window runs:
+```bash
+watch -n 5 'redis-cli -h ... SMEMBERS pod:${POD_NAME}:active_prs'
+```
+
+**Fix:** Replace with SQLite equivalents:
+```bash
+sqlite3 "${DB_PATH}" "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('pod_name', '${POD_NAME}', unixepoch())"
+```
+And for the status window:
+```bash
+watch -n 5 "sqlite3 ${DB_PATH} 'SELECT id, github_number, status FROM sessions WHERE status NOT IN (\"complete\",\"error\",\"cancelled\") ORDER BY last_activity_at DESC'"
+```
+
+---
+
+## Updated Checklist Additions (from Gap Analysis)
+
+### Phase 0: Prerequisites (NEW)
+- [ ] 0.1 Deploy RabbitMQ to K3s cluster (Helm chart or operator)
+- [ ] 0.2 Enable RabbitMQ plugins: `rabbitmq_mqtt`, `rabbitmq_web_mqtt`, `rabbitmq_management`
+- [ ] 0.3 Create RabbitMQ K8s Service (ports 5672, 1883, 15675, 15672)
+- [ ] 0.4 Create RabbitMQ credentials K8s secret
+- [ ] 0.5 Verify MQTT topic routing from within cluster
+- [ ] 0.6 Create Firebase project + service account key
+- [ ] 0.7 Store Firebase SA key as K8s secret
+- [ ] 0.8 Verify `ansi-to-svg` works with Bun (or identify fallback)
+
+### Phase 3 Additions: Redis Removal (expanded)
+- [ ] 3.x Migrate `src/lib/repl-session.ts` from Redis to SQLite (ALL 6 Redis operations)
+- [ ] 3.x Add REPL session fields to `sessions` table (or create `repl_sessions` table)
+- [ ] 3.x Update `src/orchestrate.ts` — replace all 8 Redis calls
+- [ ] 3.x Update `src/health-check.ts` — remove Redis check, add SQLite check
+- [ ] 3.x Delete or rewrite `src/debug-redis.ts` as `src/debug-db.ts`
+- [ ] 3.x Remove `build:debug-redis` script from `package.json`
+- [ ] 3.x Remove `IORedisInstrumentation` from `src/lib/telemetry.ts`
+- [ ] 3.x Remove `@opentelemetry/instrumentation-ioredis` from `package.json`
+- [ ] 3.x Remove `Metrics.recordRedisOperation()` and all call sites
+- [ ] 3.x Update Helm `values.yaml` — remove `redis` section, add `rabbitmq.url`
+- [ ] 3.x Update Helm `configmap.yaml` — replace `redis-cli` commands with `sqlite3`
+- [ ] 3.x Update Helm `statefulset.yaml` — remove `REDIS_HOST`/`REDIS_PORT`, add `RABBITMQ_URL`
+- [ ] 3.x Update Helm `cronjob-cleanup.yaml` — remove Redis env vars
+- [ ] 3.x Update `k8s/gwa-cleanup-cronjob.yaml` — remove Redis env vars
+- [ ] 3.x Update `tests/helm-chart.test.ts` — remove Redis assertions, add RabbitMQ/SQLite assertions
+- [ ] 3.x Update `src/tests/preflight.test.ts` — remove `ioredis` assertion, add `xstate`/`amqplib` assertions
+- [ ] 3.x Define canonical status enum mapping (Redis/REPL/SQLite → XState states)
+
+### Phase 5 Fixes
+- [ ] 5.x Remove stale React Native code from sections 5.5 and 5.6 (replaced by Phase 6.4 and 6.7)
+- [ ] 5.x Add PVC mount or directory for recordings (`/home/runner/.claude/recordings/`)
+
+### Infrastructure Additions
+- [ ] Add `build:terminal-relay`, `build:push-bridge`, `build:api` scripts to `package.json`
+- [ ] Update Dockerfile to build and COPY new binaries (terminal-relay, push-bridge, api)
+- [ ] Expose ports 8080 and 3001 in StatefulSet and Service
+- [ ] Mount Firebase SA key secret in runner StatefulSet
+- [ ] Add `GOOGLE_APPLICATION_CREDENTIALS` env var
