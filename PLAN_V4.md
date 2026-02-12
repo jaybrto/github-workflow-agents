@@ -541,9 +541,334 @@ rabbitmq-plugins enable rabbitmq_web_mqtt     # MQTT over WebSocket on port 1567
 
 ---
 
-## Phase 5: React Native Mobile App
+## Phase 5: Live Terminal Streaming & Snapshots
 
-### 5.1 Project Setup
+### Design Principles
+
+1. **Stream raw PTY bytes, not parsed output.** This makes us immune to Claude Code platform changes — whatever the terminal shows, the viewer shows.
+2. **Single Bun process multiplexes all sessions.** No per-session daemons. One WebSocket server, pub/sub topics per pane.
+3. **Mid-stream join via snapshot + stream.** New viewers get the current screen state instantly, then receive incremental updates.
+4. **Dual-write: live stream + asciicast recording.** Every session is automatically recorded for later playback.
+5. **Snapshots at lifecycle events.** Stored as SVG for rich display in the app and PR comments.
+
+### 5.1 Terminal Relay Service
+
+**New file:** `src/lib/terminal-relay.ts`
+
+A single Bun process that manages all active tmux pane streams:
+
+```typescript
+interface PaneStream {
+  sessionId: string;       // PR/issue session ID
+  tmuxTarget: string;      // e.g., "gwa-work:3"
+  fifoPath: string;        // /tmp/pane-pr-{N}.fifo
+  recordingPath: string;   // /home/runner/recordings/pr-{N}.cast
+  recordingFile: BunFile;  // Asciicast v2 append-only file
+  startedAt: number;
+}
+
+// Lifecycle
+export function startPaneStream(sessionId: string, tmuxTarget: string): Promise<void>;
+export function stopPaneStream(sessionId: string): Promise<void>;
+export function getActivePanes(): PaneStream[];
+```
+
+**Starting a stream:**
+1. Create named FIFO: `mkfifo /tmp/pane-pr-{N}.fifo`
+2. Attach pipe-pane: `tmux pipe-pane -O -t gwa-work:{window} 'cat > /tmp/pane-pr-{N}.fifo'`
+3. Open FIFO for reading (non-blocking via Bun file I/O)
+4. Open asciicast v2 recording file (append mode)
+5. Write asciicast header: `{"version": 2, "width": 200, "height": 50, "timestamp": ...}`
+6. Begin read loop: for each chunk from FIFO, publish to WebSocket topic + append to recording
+
+**Stopping a stream:**
+1. Detach pipe-pane: `tmux pipe-pane -t gwa-work:{window}` (no command = stop piping)
+2. Close FIFO and recording file
+3. Take a final snapshot (capture-pane)
+
+### 5.2 WebSocket Server (Multiplexed)
+
+**Integrated into the terminal relay process:**
+
+```typescript
+Bun.serve({
+  port: 8080,
+  fetch(req, server) {
+    const url = new URL(req.url);
+
+    // WebSocket upgrade for live streaming
+    if (url.pathname.startsWith('/stream/')) {
+      const sessionId = url.pathname.split('/')[2];
+      server.upgrade(req, { data: { sessionId } });
+      return;
+    }
+
+    // REST: list active panes
+    if (url.pathname === '/panes') {
+      return Response.json(getActivePanes());
+    }
+
+    // REST: get snapshot (current screen state as ANSI text)
+    if (url.pathname.startsWith('/snapshot/')) {
+      const sessionId = url.pathname.split('/')[2];
+      const ansi = await capturePane(sessionId);
+      return new Response(ansi, { headers: { 'Content-Type': 'text/plain' } });
+    }
+
+    // REST: get snapshot as SVG
+    if (url.pathname.startsWith('/snapshot-svg/')) {
+      const sessionId = url.pathname.split('/')[2];
+      const svg = await capturePaneSvg(sessionId);
+      return new Response(svg, { headers: { 'Content-Type': 'image/svg+xml' } });
+    }
+
+    return new Response('Not found', { status: 404 });
+  },
+  websocket: {
+    open(ws) {
+      const { sessionId } = ws.data;
+      const topic = `pane:${sessionId}`;
+
+      // Subscribe to live stream
+      ws.subscribe(topic);
+
+      // Mid-stream join: send current screen state as initial frame
+      // This gives the viewer instant context before incremental updates arrive
+      capturePane(sessionId).then(snapshot => {
+        ws.send(JSON.stringify({ type: 'snapshot', data: snapshot }));
+      });
+    },
+    message(ws, msg) {
+      // Future: handle resize requests from viewer
+      // { type: 'resize', cols: 120, rows: 40 }
+    },
+    close(ws) {
+      const { sessionId } = ws.data;
+      ws.unsubscribe(`pane:${sessionId}`);
+    },
+  },
+});
+```
+
+**Data flow per PTY chunk:**
+```typescript
+// In the FIFO read loop
+function onPtyData(sessionId: string, data: Uint8Array) {
+  const topic = `pane:${sessionId}`;
+  const timestamp = (Date.now() - stream.startedAt) / 1000;
+
+  // 1. Publish to live viewers (WebSocket pub/sub)
+  server.publish(topic, data);
+
+  // 2. Append to asciicast v2 recording
+  const castLine = JSON.stringify([timestamp, 'o', new TextDecoder().decode(data)]);
+  stream.recordingFile.writer().write(castLine + '\n');
+}
+```
+
+### 5.3 Snapshot Capture at Lifecycle Events
+
+**Trigger points** (integrated into XState transition actions):
+
+| Event | Trigger | What's Captured |
+|-------|---------|-----------------|
+| Session start | `todo → planning` or `todo → inProgress` | Initial terminal state |
+| State transition | Any state change | Current screen (lightweight, text only) |
+| Blocked (question) | `* → blocked` | Full screen + scrollback (last 200 lines) |
+| Error | Error detected by Claude | Full screen + scrollback (last 500 lines) |
+| Completion | `review → done` | Full screen + scrollback (last 200 lines) |
+| Crash | Process exit with non-zero code | Full screen + entire scrollback |
+
+**Snapshot pipeline:**
+```typescript
+async function takeSnapshot(sessionId: string, event: string): Promise<void> {
+  const tmuxTarget = getTargetForSession(sessionId);
+
+  // 1. Capture with ANSI codes preserved (-e) and scrollback (-S -500)
+  const ansiText = await execTmux([
+    'capture-pane', '-e', '-p', '-S', '-500', '-t', tmuxTarget
+  ]);
+
+  // 2. Convert to SVG using ansi-to-svg (npm package, Bun-compatible)
+  const svg = ansiToSvg(ansiText, {
+    paddingTop: 10,
+    paddingLeft: 10,
+    colors: 'monokai',  // or match terminal theme
+  });
+
+  // 3. Store in SQLite
+  db.run(
+    `INSERT INTO terminal_snapshots (session_id, event, ansi_text, svg, captured_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [sessionId, event, ansiText, svg, Date.now()]
+  );
+
+  // 4. Publish snapshot event via AMQP (so mobile app knows a new snapshot exists)
+  publishActivity({
+    sessionId,
+    eventType: 'screenshot',
+    data: { event, snapshotId: lastInsertRowId },
+    timestamp: Date.now(),
+  });
+}
+```
+
+**Schema addition:**
+```sql
+CREATE TABLE IF NOT EXISTS terminal_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  event TEXT NOT NULL,        -- 'start', 'transition', 'blocked', 'error', 'complete', 'crash'
+  ansi_text TEXT NOT NULL,    -- Raw ANSI text (for re-rendering)
+  svg TEXT,                   -- Pre-rendered SVG
+  captured_at INTEGER NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+CREATE INDEX idx_snapshots_session ON terminal_snapshots(session_id, captured_at);
+```
+
+### 5.4 Asciicast v2 Recordings
+
+Every session is automatically recorded in asciicast v2 format (NDJSON, append-only):
+
+**Storage:** `/home/runner/recordings/pr-{N}-{timestamp}.cast`
+
+**Format:**
+```jsonl
+{"version": 2, "width": 200, "height": 50, "timestamp": 1739318400, "env": {"TERM": "xterm-256color"}}
+[0.5, "o", "$ claude-code --continue\r\n"]
+[1.2, "o", "\u001b[32mAnalyzing PR #42...\u001b[0m\r\n"]
+[3.8, "o", "Reading src/lib/state-machine.ts...\r\n"]
+```
+
+**Size estimates:**
+| Session Type | Duration | Size (uncompressed) | Size (zstd) |
+|---|---|---|---|
+| Quick fix | 15 min | 1-3 MB | 150-450 KB |
+| Feature implementation | 1 hour | 5-10 MB | 750 KB - 1.5 MB |
+| Large refactor | 3 hours | 15-30 MB | 2-4.5 MB |
+
+**Cleanup policy:** Keep recordings for 30 days, then delete. Compress after 7 days.
+
+**Playback:** The React Native app can play recordings via asciinema-player in a WebView. Useful for reviewing "what happened while I was away" — can fast-forward, skip idle periods, etc.
+
+### 5.5 Mobile Viewer Integration
+
+**When on local network (WARP or direct LAN):**
+- Connect directly to `ws://10.43.x.x:8080/stream/{sessionId}`
+- Full live terminal in a WebView with xterm.js
+- Sub-millisecond latency on gigabit
+
+**When remote (Cloudflare tunnel):**
+- Connect via `wss://terminal.bto.bar/stream/{sessionId}`
+- Same experience, slightly higher latency
+- Cloudflare idle timeout less of a concern here — terminal output is continuous during active sessions
+
+**WebView component:**
+
+```typescript
+// src/components/TerminalViewer.tsx
+import { WebView } from 'react-native-webview';
+
+const TERMINAL_HTML = `
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+  <style>body { margin: 0; background: #1e1e1e; }</style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <script>
+    const term = new Terminal({
+      fontSize: 11,
+      fontFamily: 'monospace',
+      theme: { background: '#1e1e1e' },
+      scrollback: 5000,
+      cols: 120,  // Limit for mobile performance (not 200)
+      rows: 40,
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+
+    // Connect to relay WebSocket
+    const wsUrl = window.RELAY_URL;  // Injected by React Native
+    const ws = new WebSocket(wsUrl);
+
+    ws.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'snapshot') {
+          // Mid-stream join: render current screen state
+          term.write(msg.data);
+        }
+      } else {
+        // Binary: raw PTY data
+        term.write(new Uint8Array(event.data));
+      }
+    };
+
+    // Handle resize
+    window.addEventListener('resize', () => fitAddon.fit());
+  </script>
+</body>
+</html>
+`;
+
+export function TerminalViewer({ sessionId, relayUrl }: Props) {
+  const html = TERMINAL_HTML.replace('window.RELAY_URL', JSON.stringify(relayUrl));
+  return (
+    <WebView
+      source={{ html }}
+      style={{ flex: 1, backgroundColor: '#1e1e1e' }}
+      javaScriptEnabled
+      originWhitelist={['*']}
+    />
+  );
+}
+```
+
+**Android performance note:** xterm.js at 200+ columns causes significant slowdown on Android WebView. The mobile viewer uses 120 columns. The pod-side terminal still runs at 200x50 — the viewer just gets a horizontal scroll or the content wraps. For snapshot SVGs, full 200-column width is preserved.
+
+### 5.6 Recording Playback View
+
+For reviewing completed or past sessions, the app uses asciinema-player in a WebView:
+
+```typescript
+// src/components/RecordingPlayer.tsx
+export function RecordingPlayer({ recordingUrl }: Props) {
+  const html = `
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player/dist/bundle/asciinema-player.css" />
+    <script src="https://cdn.jsdelivr.net/npm/asciinema-player/dist/bundle/asciinema-player.min.js"></script>
+    <div id="player"></div>
+    <script>
+      AsciinemaPlayer.create('${recordingUrl}', document.getElementById('player'), {
+        speed: 2,       // Default 2x playback
+        idleTimeLimit: 3, // Cap idle gaps at 3 seconds
+        theme: 'monokai',
+        fit: 'width',
+      });
+    </script>
+  `;
+  return <WebView source={{ html }} style={{ flex: 1 }} javaScriptEnabled />;
+}
+```
+
+Playback features:
+- **Speed control:** 1x, 2x, 4x, 8x
+- **Idle compression:** Caps idle gaps at 3 seconds (a 1-hour session with lots of thinking time plays back in ~15 minutes)
+- **Scrubbing:** Seek to any point in the recording
+- **Search:** Find text in the recording (asciinema-player built-in)
+
+---
+
+## Phase 6: React Native Mobile App
+
+### 6.1 Project Setup
 
 ```bash
 npx create-expo-app gwa-mobile --template blank-typescript
@@ -556,7 +881,7 @@ npx expo install react-native-screens react-native-safe-area-context
 **Expo SDK:** 54+ (requires dev builds for notifications)
 **Build:** EAS Build (`eas build --platform android --profile development`)
 
-### 5.2 App Structure
+### 6.2 App Structure
 
 ```
 gwa-mobile/
@@ -564,12 +889,17 @@ gwa-mobile/
 │   ├── _layout.tsx               # Root layout with navigation
 │   ├── index.tsx                 # Session list screen
 │   ├── session/[id].tsx          # Session detail screen
+│   ├── session/terminal.tsx      # Live terminal viewer
+│   ├── session/recording.tsx     # Recording playback
 │   └── settings.tsx              # MQTT broker config, push token
 ├── src/
 │   ├── mqtt/
 │   │   ├── client.ts             # mqtt.js connection manager
 │   │   ├── topics.ts             # Topic constants and helpers
 │   │   └── reconnect.ts          # Exponential backoff reconnection
+│   ├── terminal/
+│   │   ├── relay.ts              # WebSocket connection to terminal relay
+│   │   └── xterm-html.ts         # xterm.js HTML template for WebView
 │   ├── notifications/
 │   │   ├── setup.ts              # FCM + Expo notification setup
 │   │   └── handlers.ts           # Notification tap handlers
@@ -582,6 +912,9 @@ gwa-mobile/
 │   │   ├── SessionCard.tsx        # Session list item
 │   │   ├── ActivityFeed.tsx       # Real-time activity stream
 │   │   ├── StateIndicator.tsx     # XState state visualization
+│   │   ├── TerminalViewer.tsx     # Live xterm.js WebView (Phase 5)
+│   │   ├── RecordingPlayer.tsx    # Asciicast playback WebView (Phase 5)
+│   │   ├── SnapshotViewer.tsx     # SVG snapshot display
 │   │   ├── AnswerModal.tsx        # Answer blocked session question
 │   │   └── ScreenshotViewer.tsx   # Terminal screenshot display
 │   └── types/
@@ -591,7 +924,7 @@ gwa-mobile/
 └── tsconfig.json
 ```
 
-### 5.3 MQTT Client Configuration (Dual-Path: WARP Primary, WSS Fallback)
+### 6.3 MQTT Client Configuration (Dual-Path: WARP Primary, WSS Fallback)
 
 ```typescript
 // src/mqtt/client.ts
@@ -649,7 +982,7 @@ const client = mqtt.connect(brokerUrl, {
 - On reconnect, re-subscribe to active topics
 - Log disconnect reason and transport type for debugging
 
-### 5.4 Screens
+### 6.4 Screens
 
 **Session List (index.tsx):**
 - Fetches initial session list via REST: `GET https://gwa-api.bto.bar/api/sessions`
@@ -671,7 +1004,7 @@ const client = mqtt.connect(brokerUrl, {
 - Publishes answer via REST: `POST https://gwa-api.bto.bar/api/sessions/{id}/answer`
 - (REST, not MQTT, because the answer needs server-side validation and processing)
 
-### 5.5 Push Notification Setup
+### 6.5 Push Notification Setup
 
 ```typescript
 // src/notifications/setup.ts
@@ -706,7 +1039,7 @@ async function registerForPushNotifications() {
 }
 ```
 
-### 5.6 Notification Strategy: Process-Stopping Events Only
+### 6.6 Notification Strategy: Process-Stopping Events Only
 
 **Principle:** Only events that halt a session's progress and require human action generate push notifications. Everything else is synced when the app returns to foreground.
 
@@ -783,9 +1116,9 @@ The MQTT persistent session (`clean: false`) is the primary sync mechanism — R
 
 ---
 
-## Phase 6: REST API for Mobile
+## Phase 7: REST API for Mobile
 
-### 6.1 API Endpoint Service
+### 7.1 API Endpoint Service
 
 **New file:** `src/api/handler.ts`
 
@@ -803,7 +1136,7 @@ A lightweight Bun HTTP server (can share the webhook pod or run separately):
 
 **Auth:** Simple bearer token (shared secret). Can upgrade to GitHub OAuth later.
 
-### 6.2 Schema Addition for Push Tokens
+### 7.2 Schema Addition for Push Tokens
 
 ```sql
 CREATE TABLE IF NOT EXISTS push_tokens (
@@ -818,9 +1151,9 @@ CREATE TABLE IF NOT EXISTS push_tokens (
 
 ---
 
-## Phase 7: Behavioral Test Suite
+## Phase 8: Behavioral Test Suite
 
-### 7.1 State Machine Tests
+### 8.1 State Machine Tests
 
 **File:** `src/tests/state-machine.test.ts`
 
@@ -841,7 +1174,7 @@ CREATE TABLE IF NOT EXISTS push_tokens (
 - Schema version stored with snapshot
 ```
 
-### 7.2 Webhook Deduplication Tests
+### 8.2 Webhook Deduplication Tests
 
 **File:** `src/tests/webhook-dedup.test.ts`
 
@@ -852,7 +1185,7 @@ CREATE TABLE IF NOT EXISTS push_tokens (
 - Concurrent identical deliveries (only one processes)
 ```
 
-### 7.3 AMQP Publishing Tests
+### 8.3 AMQP Publishing Tests
 
 **File:** `src/tests/amqp-publish.test.ts`
 
@@ -864,7 +1197,7 @@ CREATE TABLE IF NOT EXISTS push_tokens (
 - Message format matches mobile app expectations
 ```
 
-### 7.4 Session Lifecycle Tests
+### 8.4 Session Lifecycle Tests
 
 **File:** `src/tests/session-lifecycle.test.ts`
 
@@ -878,9 +1211,9 @@ CREATE TABLE IF NOT EXISTS push_tokens (
 
 ---
 
-## Phase 8: Documentation & Cleanup
+## Phase 9: Documentation & Cleanup
 
-### 8.1 Update README.md
+### 9.1 Update README.md
 
 - Replace ASCII state diagram with XState-generated diagram
 - Update architecture section with AMQP/MQTT streaming
@@ -888,14 +1221,15 @@ CREATE TABLE IF NOT EXISTS push_tokens (
 - Update tech stack table (remove Redis, add XState, amqplib, mqtt.js)
 - Update security section (timing-safe HMAC, fail-closed verification)
 
-### 8.2 Update CLAUDE.md
+### 9.2 Update CLAUDE.md
 
 - Remove Redis from SDK stack table
 - Add XState to SDK stack table
 - Add amqplib to SDK stack table
+- Add terminal relay to operational notes
 - Update operational notes with AMQP configuration
 
-### 8.3 Update CHANGELOG.md
+### 9.3 Update CHANGELOG.md
 
 Document all v4.0 changes.
 
@@ -971,68 +1305,99 @@ Document all v4.0 changes.
 - [ ] 4.21 Run `bun run typecheck` — verify clean
 - [ ] 4.22 Run `bun test` — verify all pass
 
-### Phase 5: React Native Mobile App
-- [ ] 5.1 Create Expo project with TypeScript template
-- [ ] 5.2 Install dependencies: `mqtt`, `expo-notifications`, `expo-device`, navigation
-- [ ] 5.3 Configure `app.json` with Android package name, FCM
-- [ ] 5.4 Add `google-services.json` for FCM
-- [ ] 5.5 Create dual-path MQTT client (WARP detection → native TCP or WSS fallback)
-- [ ] 5.6 Implement WARP availability detection via private IP health check
-- [ ] 5.7 Implement exponential backoff with jitter + transport failover on reconnect
-- [ ] 5.8 Create Zustand store for session state management
-- [ ] 5.9 Build Session List screen (index.tsx)
-- [ ] 5.10 Build Session Detail screen with activity feed
-- [ ] 5.11 Build Answer Modal for blocked sessions
-- [ ] 5.12 Build Screenshot Viewer component
-- [ ] 5.13 Build State Indicator component (color-coded states)
-- [ ] 5.14 Set up Expo notifications with two channels (action-required + completions)
-- [ ] 5.15 Register push token with GWA backend on app launch
-- [ ] 5.16 Handle notification taps — navigate to correct session/answer modal
-- [ ] 5.17 Implement AppState foreground resume sync (MQTT queue + REST safety net)
-- [ ] 5.18 Configure EAS Build for development and production profiles
-- [ ] 5.19 Build APK with `eas build --platform android`
-- [ ] 5.20 Test on physical Android device — WARP path (native TCP)
-- [ ] 5.21 Test on physical Android device — WSS fallback path
-- [ ] 5.22 Test push notifications — only blocked/error/complete arrive
-- [ ] 5.23 Test notification throttling — concurrent sessions don't flood
-- [ ] 5.24 Test foreground resume sync — missed messages appear in UI
-- [ ] 5.25 Test WARP→WSS failover — kill WARP, verify automatic fallback
-- [ ] 5.26 Install + configure Cloudflare One agent on test device
+### Phase 5: Live Terminal Streaming & Snapshots
+- [ ] 5.1 Create `src/lib/terminal-relay.ts` — main relay service module
+- [ ] 5.2 Implement `startPaneStream()` — mkfifo + tmux pipe-pane + FIFO reader
+- [ ] 5.3 Implement `stopPaneStream()` — detach pipe-pane + close FIFO + final snapshot
+- [ ] 5.4 Implement Bun WebSocket server with pub/sub topics per pane
+- [ ] 5.5 Implement mid-stream join — `capture-pane -e -p` snapshot on WebSocket connect
+- [ ] 5.6 Implement asciicast v2 dual-write (NDJSON append alongside live stream)
+- [ ] 5.7 Add `terminal_snapshots` table to `schema.sql`
+- [ ] 5.8 Implement `takeSnapshot()` — capture-pane + ansi-to-svg + SQLite store
+- [ ] 5.9 Integrate snapshot triggers with XState transition actions (start, blocked, error, complete, crash)
+- [ ] 5.10 Install `ansi-to-svg` npm package for SVG snapshot generation
+- [ ] 5.11 Add REST endpoints: `/panes`, `/snapshot/{id}`, `/snapshot-svg/{id}`
+- [ ] 5.12 Add recording cleanup job (compress after 7 days, delete after 30)
+- [ ] 5.13 Integrate `startPaneStream()` into session creation workflow
+- [ ] 5.14 Integrate `stopPaneStream()` into session cleanup workflow
+- [ ] 5.15 Add Cloudflare tunnel route for terminal relay (`terminal.bto.bar` → `:8080`)
+- [ ] 5.16 Write tests: FIFO read + WebSocket publish round-trip
+- [ ] 5.17 Write tests: mid-stream join delivers snapshot then incremental data
+- [ ] 5.18 Write tests: asciicast recording format validation
+- [ ] 5.19 Write tests: snapshot capture at lifecycle events
+- [ ] 5.20 Run `bun run typecheck` — verify clean
+- [ ] 5.21 Run `bun test` — verify all pass
 
-### Phase 6: REST API
-- [ ] 6.1 Create `src/api/handler.ts` with Bun.serve
-- [ ] 6.2 Implement `GET /api/sessions` endpoint
-- [ ] 6.3 Implement `GET /api/sessions/:id` endpoint (with XState snapshot)
-- [ ] 6.4 Implement `POST /api/sessions/:id/answer` endpoint
-- [ ] 6.5 Implement `GET /api/sessions/:id/screenshot` endpoint
-- [ ] 6.6 Implement `POST /api/push-tokens` endpoint
-- [ ] 6.7 Implement `DELETE /api/push-tokens` endpoint
-- [ ] 6.8 Add bearer token authentication middleware
-- [ ] 6.9 Add input validation on all endpoints
-- [ ] 6.10 Add Cloudflare tunnel route for API
-- [ ] 6.11 Add build target for `gwa-api` in `package.json`
-- [ ] 6.12 Add `gwa-api` to Dockerfile
-- [ ] 6.13 Write API endpoint tests
-- [ ] 6.14 Run `bun run typecheck` — verify clean
+### Phase 6: React Native Mobile App
+- [ ] 6.1 Create Expo project with TypeScript template
+- [ ] 6.2 Install dependencies: `mqtt`, `expo-notifications`, `expo-device`, navigation, `react-native-webview`
+- [ ] 6.3 Configure `app.json` with Android package name, FCM
+- [ ] 6.4 Add `google-services.json` for FCM
+- [ ] 6.5 Create dual-path MQTT client (WARP detection → native TCP or WSS fallback)
+- [ ] 6.6 Implement WARP availability detection via private IP health check
+- [ ] 6.7 Implement exponential backoff with jitter + transport failover on reconnect
+- [ ] 6.8 Create Zustand store for session state management
+- [ ] 6.9 Build Session List screen (index.tsx)
+- [ ] 6.10 Build Session Detail screen with activity feed
+- [ ] 6.11 Build TerminalViewer component (xterm.js in WebView + relay WebSocket)
+- [ ] 6.12 Build RecordingPlayer component (asciinema-player in WebView)
+- [ ] 6.13 Build SnapshotViewer component (SVG display)
+- [ ] 6.14 Build Answer Modal for blocked sessions
+- [ ] 6.15 Build State Indicator component (color-coded states)
+- [ ] 6.16 Add live terminal tab to Session Detail screen
+- [ ] 6.17 Add recording playback screen for completed sessions
+- [ ] 6.18 Set up Expo notifications with two channels (action-required + completions)
+- [ ] 6.19 Register push token with GWA backend on app launch
+- [ ] 6.20 Handle notification taps — navigate to correct session/answer modal
+- [ ] 6.21 Implement AppState foreground resume sync (MQTT queue + REST safety net)
+- [ ] 6.22 Configure EAS Build for development and production profiles
+- [ ] 6.23 Build APK with `eas build --platform android`
+- [ ] 6.24 Test on physical Android device — WARP path (native TCP)
+- [ ] 6.25 Test on physical Android device — WSS fallback path
+- [ ] 6.26 Test live terminal viewer — LAN latency, scrollback, colors
+- [ ] 6.27 Test recording playback — speed control, idle compression, seeking
+- [ ] 6.28 Test push notifications — only blocked/error/complete arrive
+- [ ] 6.29 Test notification throttling — concurrent sessions don't flood
+- [ ] 6.30 Test foreground resume sync — missed messages appear in UI
+- [ ] 6.31 Test WARP→WSS failover — kill WARP, verify automatic fallback
+- [ ] 6.32 Install + configure Cloudflare One agent on test device
 
-### Phase 7: Behavioral Tests
-- [ ] 7.1 Write full session lifecycle test (Todo → Done)
-- [ ] 7.2 Write blocked → resume lifecycle test
-- [ ] 7.3 Write pod restart recovery test
-- [ ] 7.4 Write concurrent session isolation test
-- [ ] 7.5 Write cleanup artifact verification test
-- [ ] 7.6 Run full test suite — verify all pass
+### Phase 7: REST API
+- [ ] 7.1 Create `src/api/handler.ts` with Bun.serve
+- [ ] 7.2 Implement `GET /api/sessions` endpoint
+- [ ] 7.3 Implement `GET /api/sessions/:id` endpoint (with XState snapshot)
+- [ ] 7.4 Implement `POST /api/sessions/:id/answer` endpoint
+- [ ] 7.5 Implement `GET /api/sessions/:id/screenshot` endpoint (latest SVG snapshot)
+- [ ] 7.6 Implement `GET /api/sessions/:id/recordings` endpoint (list asciicast files)
+- [ ] 7.7 Implement `POST /api/push-tokens` endpoint
+- [ ] 7.8 Implement `DELETE /api/push-tokens` endpoint
+- [ ] 7.9 Add bearer token authentication middleware
+- [ ] 7.10 Add input validation on all endpoints
+- [ ] 7.11 Add Cloudflare tunnel route for API
+- [ ] 7.12 Add build target for `gwa-api` in `package.json`
+- [ ] 7.13 Add `gwa-api` to Dockerfile
+- [ ] 7.14 Write API endpoint tests
+- [ ] 7.15 Run `bun run typecheck` — verify clean
 
-### Phase 8: Documentation & Cleanup
-- [ ] 8.1 Update `README.md` — architecture, tech stack, state diagram
-- [ ] 8.2 Update `CLAUDE.md` — remove Redis, add XState/amqplib
-- [ ] 8.3 Update `CHANGELOG.md` with v4.0 changes
-- [ ] 8.4 Bump `package.json` version to 4.0.0
-- [ ] 8.5 Final `bun run typecheck` + `bun test`
-- [ ] 8.6 Build all binaries: `bun run build`
-- [ ] 8.7 Build and push Docker image
-- [ ] 8.8 Deploy to K3s cluster
-- [ ] 8.9 End-to-end test: move issue through full lifecycle on real project
+### Phase 8: Behavioral Tests
+- [ ] 8.1 Write full session lifecycle test (Todo → Done)
+- [ ] 8.2 Write blocked → resume lifecycle test
+- [ ] 8.3 Write pod restart recovery test
+- [ ] 8.4 Write concurrent session isolation test
+- [ ] 8.5 Write cleanup artifact verification test (including terminal streams + recordings)
+- [ ] 8.6 Write terminal relay integration test (stream start → data → snapshot → stop)
+- [ ] 8.7 Run full test suite — verify all pass
+
+### Phase 9: Documentation & Cleanup
+- [ ] 9.1 Update `README.md` — architecture, tech stack, state diagram, terminal streaming
+- [ ] 9.2 Update `CLAUDE.md` — remove Redis, add XState/amqplib/terminal-relay
+- [ ] 9.3 Update `CHANGELOG.md` with v4.0 changes
+- [ ] 9.4 Bump `package.json` version to 4.0.0
+- [ ] 9.5 Final `bun run typecheck` + `bun test`
+- [ ] 9.6 Build all binaries: `bun run build`
+- [ ] 9.7 Build and push Docker image
+- [ ] 9.8 Deploy to K3s cluster
+- [ ] 9.9 End-to-end test: live terminal + MQTT + push notifications on real project
 
 ---
 
@@ -1044,6 +1409,7 @@ Document all v4.0 changes.
 | `xstate` | `^5.26.0` | Formal state machine |
 | `amqplib` | `^0.10.7` | AMQP publishing to RabbitMQ |
 | `@types/amqplib` | `^0.10.5` | TypeScript types |
+| `ansi-to-svg` | `^1.1.1` | Convert terminal snapshots to SVG |
 
 ### Remove
 | Package | Reason |
@@ -1055,9 +1421,10 @@ Document all v4.0 changes.
 |-----------|--------|
 | RabbitMQ | Enable `rabbitmq_mqtt` (port 1883) + `rabbitmq_web_mqtt` (port 15675) |
 | Cloudflare Tunnel | Add public route `mqtt.bto.bar` → `rabbitmq:15675` (WSS fallback) |
+| Cloudflare Tunnel | Add public route `terminal.bto.bar` → `gwa-runner:8080` (terminal relay) |
 | Cloudflare Tunnel | Add private network route `10.43.0.0/16` (WARP primary) |
 | Cloudflare Tunnel | Add route `gwa-api.bto.bar` → `gwa-runner:3001` |
-| Zero Trust | Split Tunnels Include: `10.43.0.0/16`; Gateway policy: allow RabbitMQ ports |
+| Zero Trust | Split Tunnels Include: `10.43.0.0/16`; Gateway policy: allow RabbitMQ + relay ports |
 | Mobile Device | Install Cloudflare One agent, disable battery optimization |
 
 ---
@@ -1077,3 +1444,7 @@ Document all v4.0 changes.
 | React Native mqtt.js Expo Metro resolution | Low | Low | Fixed in Expo SDK 54+; use `unstable_enablePackageExports` if needed |
 | XState history state bug (#5178) | Low | Low | We use context.previousState instead of XState history states |
 | WARP battery drain on some devices | Medium | Low | Monitor reports; 5-minute keepalive on WARP path (vs 60s on WSS) reduces radio wake-ups |
+| xterm.js 200+ cols slow on Android WebView | High | Low | Mobile viewer limited to 120 cols; pod terminal stays at 200x50; snapshots preserve full width |
+| tmux pipe-pane single consumer limit | Low | Low | Relay process fans out via WebSocket pub/sub; one FIFO reader, many WebSocket viewers |
+| Asciicast recordings fill Longhorn PVC | Low | Medium | Auto-compress after 7 days, auto-delete after 30; typical session is 5-10MB uncompressed |
+| Named FIFO orphan on crash | Low | Low | Cleanup on relay startup: remove stale FIFOs from /tmp; session cleanup also removes them |
