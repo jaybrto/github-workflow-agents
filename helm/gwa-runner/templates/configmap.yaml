@@ -47,6 +47,14 @@ data:
     # Create worktrees directory
     mkdir -p /home/runner/worktrees
 
+    # Validate Claude authentication environment
+    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+      echo "[GWA] ERROR: Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set"
+      echo "[GWA] Claude Code will not be able to authenticate — pods will be stuck on login screen"
+    else
+      echo "[GWA] Claude auth token present"
+    fi
+
     # Copy Claude credentials if not present (from mounted secret)
     CLAUDE_CONFIG_DIR="/home/runner/.claude"
     CLAUDE_CREDS_SRC="/etc/claude-credentials/credentials.json"
@@ -101,6 +109,16 @@ data:
       # Create main session with status window
       tmux new-session -d -s gwa-work -x 200 -y 50 -c /home/runner/repo
       tmux rename-window -t gwa-work:0 "status"
+
+      # Propagate auth env vars into the tmux session so new windows inherit them
+      if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        tmux set-environment -t gwa-work CLAUDE_CODE_OAUTH_TOKEN "${CLAUDE_CODE_OAUTH_TOKEN}"
+        echo "[GWA] CLAUDE_CODE_OAUTH_TOKEN pushed to tmux session environment"
+      fi
+      if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        tmux set-environment -t gwa-work ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY}"
+      fi
+
       WATCH_CMD="redis-cli -h ${REDIS_HOST} -p ${REDIS_PORT}"
       WATCH_CMD="${WATCH_CMD} SMEMBERS pod:${POD_NAME}:active_prs"
       WATCH_CMD="${WATCH_CMD} 2>/dev/null || echo 'Waiting for work...'"
@@ -108,6 +126,13 @@ data:
         "watch -n 5 '${WATCH_CMD}'" Enter
     else
       echo "[GWA] Tmux session already running"
+      # Refresh auth env vars in existing tmux session (token may have been rotated)
+      if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        tmux set-environment -t gwa-work CLAUDE_CODE_OAUTH_TOKEN "${CLAUDE_CODE_OAUTH_TOKEN}"
+      fi
+      if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        tmux set-environment -t gwa-work ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY}"
+      fi
     fi
 
     echo "[GWA] Pod ready. Keeping alive..."

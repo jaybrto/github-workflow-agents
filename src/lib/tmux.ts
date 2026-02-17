@@ -63,6 +63,16 @@ export async function ensureSession(): Promise<void> {
   }
 }
 
+/**
+ * Set an environment variable on the tmux session so new windows inherit it.
+ */
+export async function setEnvironment(
+  name: string,
+  value: string
+): Promise<void> {
+  await execTmux(["set-environment", "-t", SESSION_NAME, name, value]);
+}
+
 export async function getNextWindowIndex(): Promise<number> {
   try {
     const output = await execTmux([
