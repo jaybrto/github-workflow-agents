@@ -1,6 +1,70 @@
 import type { ClaudeStreamEvent } from "./types.js";
 import { withSpan, Metrics, log } from "./telemetry.js";
 
+// ============================================================================
+// AUTH FAILURE DETECTION
+// ============================================================================
+
+/** Patterns that indicate Claude is stuck on the authentication/login screen */
+const AUTH_FAILURE_PATTERNS = [
+  "choose how to authenticate",
+  "sign in at",
+  "/oauth/authorize",
+  "enter api key",
+  "login required",
+  "not authenticated",
+  "authentication required",
+  "authenticate with",
+  "sign in to",
+  "oauth.anthropic.com",
+  "anthropic login",
+  "max plan",
+  "usage limit",
+  "you need to login",
+  "please authenticate",
+];
+
+/**
+ * Error thrown when Claude Code is stuck on the auth/login screen.
+ */
+export class ClaudeAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ClaudeAuthError";
+  }
+}
+
+/**
+ * Check if output text contains patterns indicating Claude is stuck
+ * on the login/authentication screen.
+ */
+export function detectAuthFailure(output: string): boolean {
+  const lower = output.toLowerCase();
+  return AUTH_FAILURE_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
+/**
+ * Pre-flight check: verify Claude auth environment variables are configured.
+ * Does NOT make API calls — just checks env vars exist.
+ */
+export function checkAuthEnvironment(): { ok: boolean; error?: string } {
+  const hasOAuth = !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
+
+  if (!hasOAuth && !hasApiKey) {
+    return {
+      ok: false,
+      error: "Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set",
+    };
+  }
+
+  return { ok: true };
+}
+
+// ============================================================================
+// CLAUDE OPTIONS & RESULT
+// ============================================================================
+
 export interface ClaudeOptions {
   prompt: string;
   workingDir: string;
@@ -210,6 +274,16 @@ async function runClaudeInternal(options: ClaudeOptions): Promise<ClaudeResult> 
     stderrChunks.push(decoder.decode(value));
   }
   const stderr = stderrChunks.join("");
+
+  // Check for auth failure in output or stderr
+  const combinedForAuthCheck = outputChunks.join("\n") + "\n" + stderr;
+  if (detectAuthFailure(combinedForAuthCheck)) {
+    return {
+      success: false,
+      output: outputChunks.join("\n"),
+      error: `Claude authentication failed — pod is stuck on login screen. CLAUDE_CODE_OAUTH_TOKEN may be expired or invalid. Details: ${(lastError || stderr).slice(0, 500)}`,
+    };
+  }
 
   if (exitCode !== 0 && !askedQuestion) {
     return {

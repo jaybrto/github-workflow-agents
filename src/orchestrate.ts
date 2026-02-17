@@ -9,6 +9,7 @@ import * as github from "./lib/github.js";
 import * as tmux from "./lib/tmux.js";
 import * as git from "./lib/git.js";
 import * as claude from "./lib/claude.js";
+import { ClaudeAuthError } from "./lib/claude.js";
 import { startREPL } from "./lib/repl-session.js";
 import { analyzeTaskComplexity } from "./lib/task-analyzer.js";
 import { generateComment } from "./lib/comment-generator.js";
@@ -127,13 +128,17 @@ async function main() {
       error: error instanceof Error ? error.message : String(error),
     });
 
-    await github.postError(
-      ctx.owner,
-      ctx.repoName,
-      ctx.pr,
-      "Orchestration failed",
-      error instanceof Error ? error.message : String(error)
-    );
+    if (error instanceof ClaudeAuthError) {
+      await postAuthStuckComment(ctx, error.message);
+    } else {
+      await github.postError(
+        ctx.owner,
+        ctx.repoName,
+        ctx.pr,
+        "Orchestration failed",
+        error instanceof Error ? error.message : String(error)
+      );
+    }
   } finally {
     // Record metrics
     Metrics.recordOrchestration(ctx.repo, ctx.pr, ctx.trigger, success);
@@ -147,6 +152,14 @@ async function main() {
 }
 
 async function orchestrate(ctx: PRContext): Promise<void> {
+  // 0. Pre-flight: verify Claude auth environment is configured
+  const authCheck = claude.checkAuthEnvironment();
+  if (!authCheck.ok) {
+    log("error", "Claude auth pre-flight failed", { error: authCheck.error || "unknown" });
+    await postAuthStuckComment(ctx, authCheck.error!);
+    throw new Error(`Auth pre-flight failed: ${authCheck.error}`);
+  }
+
   // 1. Ensure tmux session exists
   await withSpan("tmux.ensureSession", async () => {
     log("debug", "Ensuring tmux session");
@@ -460,16 +473,25 @@ async function executeHeadlessMode(
         });
         await redis.updateSessionStatus(ctx.repo, ctx.pr, "error");
 
-        // Use smart comment generator for error
-        const comment = await generateComment({
-          type: "error",
-          error: result.error || "Unknown error",
-          context: result.output.slice(-2000),
-          prNumber: ctx.pr,
-        });
+        // Check if this is an auth failure
+        const isAuthFailure = claude.detectAuthFailure(
+          (result.error || "") + "\n" + result.output.slice(-2000)
+        );
 
-        await github.postPRComment(ctx.owner, ctx.repoName, ctx.pr, comment.body);
-        Metrics.recordGitHubApiCall("postPRComment", true);
+        if (isAuthFailure) {
+          await postAuthStuckComment(ctx, result.error || "Authentication failure detected in headless output");
+        } else {
+          // Use smart comment generator for error
+          const comment = await generateComment({
+            type: "error",
+            error: result.error || "Unknown error",
+            context: result.output.slice(-2000),
+            prNumber: ctx.pr,
+          });
+
+          await github.postPRComment(ctx.owner, ctx.repoName, ctx.pr, comment.body);
+          Metrics.recordGitHubApiCall("postPRComment", true);
+        }
         Metrics.sessionEnded();
       }
     },
@@ -490,6 +512,44 @@ function buildPrompt(ctx: PRContext): string {
 
     default:
       return `Work on PR #${ctx.pr}.`;
+  }
+}
+
+/**
+ * Post a GitHub comment notifying that the pod is stuck on Claude auth.
+ */
+async function postAuthStuckComment(ctx: PRContext, details: string): Promise<void> {
+  const podName = process.env.POD_NAME || "unknown";
+  const timestamp = new Date().toISOString();
+
+  const body = [
+    `**Claude Code authentication failure**`,
+    ``,
+    `The pod is stuck on the Claude Code login/authentication screen and cannot process commands.`,
+    ``,
+    `**Details:** ${details.slice(0, 500)}`,
+    ``,
+    `**Action required:**`,
+    `1. Verify the \`CLAUDE_CODE_OAUTH_TOKEN\` secret is set and not expired`,
+    `2. Refresh the token if needed:`,
+    `   \`\`\`bash`,
+    `   kubectl create secret generic gwa-secrets \\`,
+    `     --from-literal=claude-oauth-token=<new-token> \\`,
+    `     --dry-run=client -o yaml | kubectl apply -f -`,
+    `   \`\`\``,
+    `3. Restart the pod: \`kubectl rollout restart statefulset gwa-runner\``,
+    ``,
+    `*Pod: \`${podName}\` | Detected at: ${timestamp}*`,
+  ].join("\n");
+
+  try {
+    await github.postPRComment(ctx.owner, ctx.repoName, ctx.pr, body);
+    Metrics.recordGitHubApiCall("postPRComment.authError", true);
+  } catch (commentError) {
+    log("error", "Failed to post auth error comment", {
+      pr: ctx.pr,
+      error: commentError instanceof Error ? commentError.message : String(commentError),
+    });
   }
 }
 
