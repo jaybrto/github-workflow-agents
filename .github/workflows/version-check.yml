@@ -1,0 +1,111 @@
+name: Version & Changelog Check
+
+# Enforces that PRs include version bumps and CHANGELOG updates
+# when significant code changes are made.
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check-version:
+    name: Check Version Bump
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
+          echo "changed_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Check for source code changes
+        id: check-src
+        run: |
+          CHANGED_FILES="${{ steps.changed-files.outputs.changed_files }}"
+          SRC_CHANGED=false
+
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+
+            # Only flag actual source/config changes that affect the build
+            case "$file" in
+              src/*.ts|src/**/*.ts|Dockerfile|templates/*|scripts/*|schema.sql)
+                SRC_CHANGED=true
+                break
+                ;;
+            esac
+          done <<< "$CHANGED_FILES"
+
+          echo "src_changed=$SRC_CHANGED" >> $GITHUB_OUTPUT
+
+      - name: Check package.json version bump
+        if: steps.check-src.outputs.src_changed == 'true'
+        run: |
+          # Check if PR title has skip marker
+          if [[ "${{ github.event.pull_request.title }}" == *"[skip-version-check]"* ]]; then
+            echo "::notice::Version check skipped via PR title marker"
+            exit 0
+          fi
+
+          if ! git diff origin/main...HEAD --name-only | grep -q "^package.json$"; then
+            echo "::error::Source files changed but package.json version not updated"
+            echo ""
+            echo "Please bump the version in package.json (semver: patch for fixes, minor for features)."
+            echo ""
+            echo "If this change doesn't warrant a version bump,"
+            echo "add [skip-version-check] to your PR title."
+            exit 1
+          fi
+
+          echo "package.json version bump detected!"
+
+      - name: Check CHANGELOG.md update
+        if: steps.check-src.outputs.src_changed == 'true'
+        run: |
+          # Check if PR title has skip marker
+          if [[ "${{ github.event.pull_request.title }}" == *"[skip-changelog]"* ]]; then
+            echo "::notice::Changelog check skipped via PR title marker"
+            exit 0
+          fi
+
+          if ! git diff origin/main...HEAD --name-only | grep -q "^CHANGELOG.md$"; then
+            echo "::error::CHANGELOG.md not updated"
+            echo ""
+            echo "Please add an entry to CHANGELOG.md describing your changes."
+            echo "Follow the Keep a Changelog format: https://keepachangelog.com"
+            echo ""
+            echo "If this change doesn't warrant a changelog entry,"
+            echo "add [skip-changelog] to your PR title."
+            exit 1
+          fi
+
+          echo "CHANGELOG.md was updated!"
+
+      - name: Summary
+        if: steps.check-src.outputs.src_changed == 'true'
+        run: |
+          echo "## Version Check Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Source files changed | ${{ steps.check-src.outputs.src_changed }} |" >> $GITHUB_STEP_SUMMARY
+          VERSION_BUMPED=$(git diff origin/main...HEAD --name-only | grep -q "^package.json$" && echo "yes" || echo "no")
+          CHANGELOG_UPDATED=$(git diff origin/main...HEAD --name-only | grep -q "^CHANGELOG.md$" && echo "yes" || echo "no")
+          echo "| package.json updated | $VERSION_BUMPED |" >> $GITHUB_STEP_SUMMARY
+          echo "| CHANGELOG.md updated | $CHANGELOG_UPDATED |" >> $GITHUB_STEP_SUMMARY
+
+      - name: No source changes
+        if: steps.check-src.outputs.src_changed == 'false'
+        run: |
+          echo "No source file changes detected — version bump and changelog not required."
+          echo "## Version Check Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No source file changes detected — checks skipped." >> $GITHUB_STEP_SUMMARY
