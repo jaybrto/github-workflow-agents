@@ -3273,6 +3273,42 @@ kubectl exec claude-runner-0 -- tmux kill-session -t claude-work
 kubectl exec claude-runner-0 -- tmux new-session -d -s claude-work
 ```
 
+### Issue: Pod stuck on Claude Code login/auth screen *(FIXED in v1.1.0)*
+
+Pods can get stuck on the Claude Code authentication screen despite `CLAUDE_CODE_OAUTH_TOKEN` being set. This silently prevents the pod from processing commands.
+
+**Root cause:** tmux sessions may not propagate env vars to new windows; token may expire without detection.
+
+**Three-layer fix implemented:**
+
+1. **Prevention** — Auth tokens explicitly pushed into tmux session via `tmux set-environment`:
+   - Entrypoint (`helm/configmap.yaml`): pushes tokens on session creation and refreshes on restart
+   - `src/lib/repl-session.ts`: calls `setEnvironment()` before creating REPL windows
+   - `src/lib/tmux.ts`: new `setEnvironment()` wraps `tmux set-environment`
+
+2. **Detection** — Auth screen patterns checked after Claude launch:
+   - `src/lib/claude.ts`: `detectAuthFailure()` checks output against 15 auth-screen patterns
+   - REPL mode: pane captured 3s after launch, checked for patterns, window killed if stuck
+   - Headless mode: stderr/stdout checked before returning generic errors
+   - Pre-flight: `checkAuthEnvironment()` validates env vars exist before any launch
+
+3. **Notification** — GitHub PR comment posted with remediation:
+   - `src/orchestrate.ts`: `postAuthStuckComment()` posts comment with pod name, timestamp, and fix steps
+
+**If it still happens (token expired):**
+
+```bash
+# Refresh the token
+kubectl create secret generic gwa-secrets \
+  --from-literal=claude-oauth-token=<new-token> \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Restart the pod
+kubectl rollout restart statefulset gwa-runner
+```
+
+**Files changed:** `src/lib/claude.ts`, `src/lib/tmux.ts`, `src/lib/repl-session.ts`, `src/orchestrate.ts`, `helm/gwa-runner/templates/configmap.yaml`
+
 ### Monitoring: Check Active Sessions
 
 ```bash
@@ -3294,6 +3330,7 @@ kubectl exec -it claude-runner-0 -- tmux attach-session -t claude-work
 - [ ] **Infrastructure:** Longhorn installed, PVC created
 - [ ] **Pod:** StatefulSet deployed, pod running
 - [ ] **SQLite:** Database initialized, WAL mode enabled
+- [x] **Auth Detection:** Claude auth-screen detection and PR notification (v1.1.0)
 - [ ] **GitHub:** OAuth token generated and stored in secrets
 - [ ] **Container:** Image built and pushed to registry
 - [ ] **Workflows:** Both workflows (.yml files) created and committed
