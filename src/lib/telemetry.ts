@@ -152,6 +152,47 @@ const activeSessionsGauge = meter.createUpDownCounter("gwa_sessions_active", {
   unit: "1",
 });
 
+// Session metrics (Issue #5)
+const sessionsCompletedCounter = meter.createCounter("gwa_sessions_completed_total", {
+  description: "Total completed sessions by outcome",
+  unit: "1",
+});
+
+const sessionDurationHistogram = meter.createHistogram("gwa_session_duration_seconds", {
+  description: "Session execution time distribution",
+  unit: "s",
+});
+
+const toolCallsCounter = meter.createCounter("gwa_tool_calls_total", {
+  description: "Total tool calls by tool name",
+  unit: "1",
+});
+
+const questionsAskedCounter = meter.createCounter("gwa_questions_asked_total", {
+  description: "Total questions asked by Claude",
+  unit: "1",
+});
+
+const questionsAnsweredCounter = meter.createCounter("gwa_questions_answered_total", {
+  description: "Total questions answered by users",
+  unit: "1",
+});
+
+const questionResponseHistogram = meter.createHistogram("gwa_question_response_seconds", {
+  description: "Question response time distribution",
+  unit: "s",
+});
+
+const commitsCreatedCounter = meter.createCounter("gwa_commits_created_total", {
+  description: "Total commits created by sessions",
+  unit: "1",
+});
+
+const agentTasksCounter = meter.createCounter("gwa_agent_tasks_total", {
+  description: "Total agent tasks completed",
+  unit: "1",
+});
+
 // ============================================================================
 // SPAN HELPERS
 // ============================================================================
@@ -334,6 +375,93 @@ export const Metrics = {
 
   recordSwarmCleanup() {
     prCleanupCounter.add(1, { operation: "swarm" });
+  },
+};
+
+// ============================================================================
+// SESSION METRICS (Issue #5)
+// ============================================================================
+
+/**
+ * Session-specific metrics for dashboard visualization.
+ * Tracks session outcomes, duration, tool usage, and interactivity.
+ */
+export const SessionMetrics = {
+  /**
+   * Record a completed session with its outcome and duration.
+   */
+  recordSessionComplete(
+    repo: string,
+    status: "complete" | "error" | "interrupted",
+    type: string,
+    durationSeconds: number
+  ) {
+    try {
+      sessionsCompletedCounter.add(1, { repo, status, type });
+      sessionDurationHistogram.record(durationSeconds, { repo, type });
+    } catch (error) {
+      console.error("[Metrics] Failed to record session completion:", error);
+    }
+  },
+
+  /**
+   * Record a tool call execution.
+   */
+  recordToolCall(toolName: string, sessionId: string, success: boolean) {
+    try {
+      toolCallsCounter.add(1, {
+        tool_name: toolName,
+        session_id: sessionId,
+        success: success.toString(),
+      });
+    } catch (error) {
+      console.error("[Metrics] Failed to record tool call:", error);
+    }
+  },
+
+  /**
+   * Record a question asked by Claude.
+   */
+  recordQuestionAsked(repo: string) {
+    try {
+      questionsAskedCounter.add(1, { repo });
+    } catch (error) {
+      console.error("[Metrics] Failed to record question asked:", error);
+    }
+  },
+
+  /**
+   * Record a question answered by a user.
+   */
+  recordQuestionAnswered(repo: string, latencySeconds: number) {
+    try {
+      questionsAnsweredCounter.add(1, { repo });
+      questionResponseHistogram.record(latencySeconds, { repo });
+    } catch (error) {
+      console.error("[Metrics] Failed to record question answered:", error);
+    }
+  },
+
+  /**
+   * Record a commit created during a session.
+   */
+  recordCommitCreated(repo: string, sessionId: string) {
+    try {
+      commitsCreatedCounter.add(1, { repo, session_id: sessionId });
+    } catch (error) {
+      console.error("[Metrics] Failed to record commit created:", error);
+    }
+  },
+
+  /**
+   * Record an agent task completion.
+   */
+  recordAgentTaskComplete(status: "completed" | "failed", agentType: string) {
+    try {
+      agentTasksCounter.add(1, { status, agent_type: agentType });
+    } catch (error) {
+      console.error("[Metrics] Failed to record agent task:", error);
+    }
   },
 };
 

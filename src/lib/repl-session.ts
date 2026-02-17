@@ -11,9 +11,11 @@ import {
   windowExists,
   killWindow,
   capturePane,
+  setEnvironment,
 } from "./tmux.js";
 import { getRedisClient } from "./redis.js";
 import { log, withSpan, Metrics } from "./telemetry.js";
+import { ClaudeAuthError, detectAuthFailure } from "./claude.js";
 
 // ============================================================================
 // TYPES
@@ -154,6 +156,16 @@ export async function startREPL(
       // Ensure the main tmux session exists
       await ensureSession();
 
+      // Propagate auth env vars into the tmux session so new windows inherit them
+      const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (oauthToken) {
+        await setEnvironment("CLAUDE_CODE_OAUTH_TOKEN", oauthToken);
+      }
+      if (apiKey) {
+        await setEnvironment("ANTHROPIC_API_KEY", apiKey);
+      }
+
       // Create a new window for this REPL
       const windowName = `repl-${sessionId.slice(0, 8)}`;
       const tmuxWindow = await createWindow(windowName, workingDir);
@@ -180,8 +192,28 @@ export async function startREPL(
       // Start Claude in interactive mode (no --print flag)
       await sendCommand(tmuxWindow, "claude");
 
-      // Wait a moment for Claude to initialize
-      await Bun.sleep(2000);
+      // Wait for Claude to initialize (3s to allow auth check)
+      await Bun.sleep(3000);
+
+      // Check if Claude is stuck on the auth/login screen
+      const paneOutput = await capturePane(tmuxWindow, 30);
+      if (detectAuthFailure(paneOutput)) {
+        log("error", "Claude stuck on auth screen in REPL", {
+          sessionId,
+          tmuxWindow,
+          paneOutput: paneOutput.slice(0, 500),
+        });
+
+        // Clean up the stuck window and session
+        await killWindow(tmuxWindow);
+        await deleteSession(sessionId);
+
+        throw new ClaudeAuthError(
+          `Claude is stuck on the authentication screen. ` +
+          `CLAUDE_CODE_OAUTH_TOKEN may be expired or invalid. ` +
+          `Captured output: ${paneOutput.slice(0, 300)}`
+        );
+      }
 
       // Send the initial prompt
       await sendKeys(tmuxWindow, prompt);
