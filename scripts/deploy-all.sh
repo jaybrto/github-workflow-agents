@@ -38,6 +38,13 @@ kubectl apply -f "${K8S_DIR}/gwa-cleanup-rbac.yaml"
 echo "[GWA Deploy] Step 6: Cleanup CronJob"
 kubectl apply -f "${K8S_DIR}/gwa-cleanup-cronjob.yaml"
 
+echo "[GWA Deploy] Step 7: Grafana Dashboard ConfigMap"
+if [ -f "${K8S_DIR}/grafana/configmap-dashboards.yaml" ]; then
+    kubectl apply -f "${K8S_DIR}/grafana/configmap-dashboards.yaml"
+else
+    echo "[GWA Deploy] WARNING: Grafana dashboard ConfigMap not found, skipping"
+fi
+
 echo
 echo "[GWA Deploy] All manifests applied."
 echo "[GWA Deploy] Checking pod status..."

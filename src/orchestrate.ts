@@ -13,6 +13,7 @@ import { ClaudeAuthError } from "./lib/claude.js";
 import { startREPL } from "./lib/repl-session.js";
 import { analyzeTaskComplexity } from "./lib/task-analyzer.js";
 import { generateComment } from "./lib/comment-generator.js";
+import { startMetricsExporter } from "./lib/metrics-exporter.js";
 
 async function main() {
   const { values } = parseArgs({
@@ -86,6 +87,9 @@ async function main() {
     owner,
     repoName,
   };
+
+  // Start background metrics exporter (safe to call multiple times)
+  startMetricsExporter();
 
   const startTime = Date.now();
   let success = false;
