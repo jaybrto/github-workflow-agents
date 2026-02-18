@@ -18,6 +18,11 @@ name: Build Container Images
         required: false
         default: "all"
 
+env:
+  # Internal Gitea service for Kaniko push (HTTP, no TLS issues)
+  REGISTRY: gitea-http.gitea-system.svc.cluster.local:3000
+  ORG: jaybrto
+
 jobs:
   # Determine which images need building based on changed files
   changes:
@@ -89,7 +94,7 @@ jobs:
     if: needs.changes.outputs.runner == 'true'
     runs-on: self-hosted
     env:
-      IMAGE: registry.bto.bar/jaybrto/github-workflow-agents
+      IMAGE_NAME: github-workflow-agents
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -102,6 +107,7 @@ jobs:
 
       - name: Build runner image
         run: |
+          DEST="${{ env.REGISTRY }}/${{ env.ORG }}/${{ env.IMAGE_NAME }}"
           cat <<EOF | kubectl apply -f -
           apiVersion: v1
           kind: Pod
@@ -116,20 +122,19 @@ jobs:
                 args:
                   - "--dockerfile=Dockerfile"
                   - "--context=git://github.com/${{ github.repository }}.git#refs/heads/${{ github.ref_name }}"
-                  - "--destination=${{ env.IMAGE }}:latest"
-                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }}"
-                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
+                  - "--destination=${DEST}:latest"
+                  - "--destination=${DEST}:${{ steps.meta.outputs.sha_short }}"
+                  - "--destination=${DEST}:${{ steps.meta.outputs.timestamp }}"
                   - "--cache=true"
-                  - "--cache-repo=${{ env.IMAGE }}/cache"
-                  - "--skip-tls-verify-registry=registry.bto.bar"
-                  - "--skip-tls-verify-registry=gitea.k3s.bto.bar"
+                  - "--cache-repo=${DEST}/cache"
+                  - "--insecure-registry=${{ env.REGISTRY }}"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
             volumes:
               - name: docker-config
                 secret:
-                  secretName: gitea-registry-secret
+                  secretName: gitea-registry-push
                   items:
                     - key: .dockerconfigjson
                       path: config.json
@@ -166,7 +171,7 @@ jobs:
     if: needs.changes.outputs.orchestrator == 'true'
     runs-on: self-hosted
     env:
-      IMAGE: registry.bto.bar/jaybrto/gwa-orchestrator
+      IMAGE_NAME: gwa-orchestrator
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -179,6 +184,7 @@ jobs:
 
       - name: Build orchestrator image
         run: |
+          DEST="${{ env.REGISTRY }}/${{ env.ORG }}/${{ env.IMAGE_NAME }}"
           cat <<EOF | kubectl apply -f -
           apiVersion: v1
           kind: Pod
@@ -193,20 +199,19 @@ jobs:
                 args:
                   - "--dockerfile=Dockerfile.orchestrator"
                   - "--context=git://github.com/${{ github.repository }}.git#refs/heads/${{ github.ref_name }}"
-                  - "--destination=${{ env.IMAGE }}:latest"
-                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }}"
-                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
+                  - "--destination=${DEST}:latest"
+                  - "--destination=${DEST}:${{ steps.meta.outputs.sha_short }}"
+                  - "--destination=${DEST}:${{ steps.meta.outputs.timestamp }}"
                   - "--cache=true"
-                  - "--cache-repo=${{ env.IMAGE }}/cache"
-                  - "--skip-tls-verify-registry=registry.bto.bar"
-                  - "--skip-tls-verify-registry=gitea.k3s.bto.bar"
+                  - "--cache-repo=${DEST}/cache"
+                  - "--insecure-registry=${{ env.REGISTRY }}"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
             volumes:
               - name: docker-config
                 secret:
-                  secretName: gitea-registry-secret
+                  secretName: gitea-registry-push
                   items:
                     - key: .dockerconfigjson
                       path: config.json
@@ -243,7 +248,7 @@ jobs:
     if: needs.changes.outputs.webhook == 'true'
     runs-on: self-hosted
     env:
-      IMAGE: registry.bto.bar/jaybrto/gwa-webhook
+      IMAGE_NAME: gwa-webhook
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -256,6 +261,7 @@ jobs:
 
       - name: Build webhook image
         run: |
+          DEST="${{ env.REGISTRY }}/${{ env.ORG }}/${{ env.IMAGE_NAME }}"
           cat <<EOF | kubectl apply -f -
           apiVersion: v1
           kind: Pod
@@ -270,20 +276,19 @@ jobs:
                 args:
                   - "--dockerfile=Dockerfile.webhook"
                   - "--context=git://github.com/${{ github.repository }}.git#refs/heads/${{ github.ref_name }}"
-                  - "--destination=${{ env.IMAGE }}:latest"
-                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }}"
-                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
+                  - "--destination=${DEST}:latest"
+                  - "--destination=${DEST}:${{ steps.meta.outputs.sha_short }}"
+                  - "--destination=${DEST}:${{ steps.meta.outputs.timestamp }}"
                   - "--cache=true"
-                  - "--cache-repo=${{ env.IMAGE }}/cache"
-                  - "--skip-tls-verify-registry=registry.bto.bar"
-                  - "--skip-tls-verify-registry=gitea.k3s.bto.bar"
+                  - "--cache-repo=${DEST}/cache"
+                  - "--insecure-registry=${{ env.REGISTRY }}"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
             volumes:
               - name: docker-config
                 secret:
-                  secretName: gitea-registry-secret
+                  secretName: gitea-registry-push
                   items:
                     - key: .dockerconfigjson
                       path: config.json
