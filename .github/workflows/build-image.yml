@@ -121,6 +121,7 @@ jobs:
                   - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
                   - "--cache=true"
                   - "--cache-repo=${{ env.IMAGE }}/cache"
+                  - "--insecure-registry=registry.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
@@ -196,6 +197,7 @@ jobs:
                   - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
                   - "--cache=true"
                   - "--cache-repo=${{ env.IMAGE }}/cache"
+                  - "--insecure-registry=registry.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
@@ -271,6 +273,7 @@ jobs:
                   - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
                   - "--cache=true"
                   - "--cache-repo=${{ env.IMAGE }}/cache"
+                  - "--insecure-registry=registry.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
