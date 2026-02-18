@@ -122,9 +122,21 @@ jobs:
               - ip: "${{ steps.meta.outputs.proxy_ip }}"
                 hostnames:
                   - gitea.k3s.bto.bar
+            initContainers:
+              - name: setup-certs
+                image: alpine:latest
+                command: ["sh", "-c", "cat /etc/ssl/certs/ca-certificates.crt /custom-ca/ca.crt > /certs/ca-certificates.crt"]
+                volumeMounts:
+                  - name: merged-certs
+                    mountPath: /certs
+                  - name: custom-ca
+                    mountPath: /custom-ca
             containers:
               - name: kaniko
                 image: gcr.io/kaniko-project/executor:latest
+                env:
+                  - name: SSL_CERT_FILE
+                    value: /certs/ca-certificates.crt
                 args:
                   - "--dockerfile=Dockerfile"
                   - "--context=git://github.com/${{ github.repository }}.git#refs/heads/${{ github.ref_name }}"
@@ -134,10 +146,11 @@ jobs:
                   - "--cache=true"
                   - "--cache-repo=${DEST}/cache"
                   - "--insecure-registry=${{ env.REGISTRY }}"
-                  - "--insecure-registry=gitea.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
+                  - name: merged-certs
+                    mountPath: /certs
             volumes:
               - name: docker-config
                 secret:
@@ -145,6 +158,11 @@ jobs:
                   items:
                     - key: .dockerconfigjson
                       path: config.json
+              - name: custom-ca
+                configMap:
+                  name: gitea-proxy-ca
+              - name: merged-certs
+                emptyDir: {}
           EOF
 
       - name: Wait for build
@@ -206,9 +224,21 @@ jobs:
               - ip: "${{ steps.meta.outputs.proxy_ip }}"
                 hostnames:
                   - gitea.k3s.bto.bar
+            initContainers:
+              - name: setup-certs
+                image: alpine:latest
+                command: ["sh", "-c", "cat /etc/ssl/certs/ca-certificates.crt /custom-ca/ca.crt > /certs/ca-certificates.crt"]
+                volumeMounts:
+                  - name: merged-certs
+                    mountPath: /certs
+                  - name: custom-ca
+                    mountPath: /custom-ca
             containers:
               - name: kaniko
                 image: gcr.io/kaniko-project/executor:latest
+                env:
+                  - name: SSL_CERT_FILE
+                    value: /certs/ca-certificates.crt
                 args:
                   - "--dockerfile=Dockerfile.orchestrator"
                   - "--context=git://github.com/${{ github.repository }}.git#refs/heads/${{ github.ref_name }}"
@@ -218,10 +248,11 @@ jobs:
                   - "--cache=true"
                   - "--cache-repo=${DEST}/cache"
                   - "--insecure-registry=${{ env.REGISTRY }}"
-                  - "--insecure-registry=gitea.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
+                  - name: merged-certs
+                    mountPath: /certs
             volumes:
               - name: docker-config
                 secret:
@@ -229,6 +260,11 @@ jobs:
                   items:
                     - key: .dockerconfigjson
                       path: config.json
+              - name: custom-ca
+                configMap:
+                  name: gitea-proxy-ca
+              - name: merged-certs
+                emptyDir: {}
           EOF
 
       - name: Wait for build
@@ -290,9 +326,21 @@ jobs:
               - ip: "${{ steps.meta.outputs.proxy_ip }}"
                 hostnames:
                   - gitea.k3s.bto.bar
+            initContainers:
+              - name: setup-certs
+                image: alpine:latest
+                command: ["sh", "-c", "cat /etc/ssl/certs/ca-certificates.crt /custom-ca/ca.crt > /certs/ca-certificates.crt"]
+                volumeMounts:
+                  - name: merged-certs
+                    mountPath: /certs
+                  - name: custom-ca
+                    mountPath: /custom-ca
             containers:
               - name: kaniko
                 image: gcr.io/kaniko-project/executor:latest
+                env:
+                  - name: SSL_CERT_FILE
+                    value: /certs/ca-certificates.crt
                 args:
                   - "--dockerfile=Dockerfile.webhook"
                   - "--context=git://github.com/${{ github.repository }}.git#refs/heads/${{ github.ref_name }}"
@@ -302,10 +350,11 @@ jobs:
                   - "--cache=true"
                   - "--cache-repo=${DEST}/cache"
                   - "--insecure-registry=${{ env.REGISTRY }}"
-                  - "--insecure-registry=gitea.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
+                  - name: merged-certs
+                    mountPath: /certs
             volumes:
               - name: docker-config
                 secret:
@@ -313,6 +362,11 @@ jobs:
                   items:
                     - key: .dockerconfigjson
                       path: config.json
+              - name: custom-ca
+                configMap:
+                  name: gitea-proxy-ca
+              - name: merged-certs
+                emptyDir: {}
           EOF
 
       - name: Wait for build
