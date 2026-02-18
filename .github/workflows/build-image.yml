@@ -1,5 +1,5 @@
 ---
-name: Build Container Image
+name: Build Container Images
 
 "on":
   push:
@@ -8,16 +8,88 @@ name: Build Container Image
       - "src/**"
       - "package.json"
       - "Dockerfile"
+      - "Dockerfile.*"
       - "schema.sql"
-      - "bun.lockb"
+      - "bun.lock"
   workflow_dispatch:
-
-env:
-  IMAGE: ghcr.io/jaybrto/github-workflow-agents
+    inputs:
+      images:
+        description: "Comma-separated list of images to build (runner,orchestrator,webhook) or 'all'"
+        required: false
+        default: "all"
 
 jobs:
-  build:
+  # Determine which images need building based on changed files
+  changes:
     runs-on: self-hosted
+    outputs:
+      runner: ${{ steps.filter.outputs.runner }}
+      orchestrator: ${{ steps.filter.outputs.orchestrator }}
+      webhook: ${{ steps.filter.outputs.webhook }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changes
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            INPUT="${{ github.event.inputs.images }}"
+            if [ "$INPUT" = "all" ] || [ -z "$INPUT" ]; then
+              echo "runner=true" >> "$GITHUB_OUTPUT"
+              echo "orchestrator=true" >> "$GITHUB_OUTPUT"
+              echo "webhook=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "runner=false" >> "$GITHUB_OUTPUT"
+              echo "orchestrator=false" >> "$GITHUB_OUTPUT"
+              echo "webhook=false" >> "$GITHUB_OUTPUT"
+              IFS=',' read -ra IMGS <<< "$INPUT"
+              for img in "${IMGS[@]}"; do
+                echo "$(echo "$img" | xargs)=true" >> "$GITHUB_OUTPUT"
+              done
+            fi
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only HEAD~1 HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          # Shared files trigger all builds
+          SHARED=false
+          if echo "$CHANGED" | grep -qE '^(package\.json|bun\.lock|src/lib/|src/shared/)'; then
+            SHARED=true
+          fi
+
+          # Runner: Dockerfile, schema.sql, or any src/ change
+          if [ "$SHARED" = "true" ] || echo "$CHANGED" | grep -qE '^(Dockerfile|schema\.sql|src/)'; then
+            echo "runner=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "runner=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Orchestrator: Dockerfile.orchestrator or orchestrator source
+          if [ "$SHARED" = "true" ] || echo "$CHANGED" | grep -qE '^(Dockerfile\.orchestrator|src/orchestrator/)'; then
+            echo "orchestrator=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "orchestrator=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Webhook: Dockerfile.webhook or webhook source
+          if [ "$SHARED" = "true" ] || echo "$CHANGED" | grep -qE '^(Dockerfile\.webhook|src/webhook/)'; then
+            echo "webhook=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "webhook=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-runner:
+    needs: changes
+    if: needs.changes.outputs.runner == 'true'
+    runs-on: self-hosted
+    env:
+      IMAGE: ghcr.io/jaybrto/github-workflow-agents
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,14 +100,13 @@ jobs:
           echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
 
-      - name: Build with Kaniko
+      - name: Build runner image
         run: |
-          # Create Kaniko pod to build and push
           cat <<EOF | kubectl apply -f -
           apiVersion: v1
           kind: Pod
           metadata:
-            name: kaniko-${{ github.run_id }}
+            name: kaniko-runner-${{ github.run_id }}
             namespace: default
           spec:
             restartPolicy: Never
@@ -64,19 +135,17 @@ jobs:
 
       - name: Wait for build
         run: |
-          echo "Waiting for Kaniko build..."
-          # Wait for pod to start
-          kubectl wait --for=condition=Ready pod/kaniko-${{ github.run_id }} --timeout=120s 2>/dev/null || true
-          # Wait for completion (Succeeded or Failed)
+          echo "Waiting for runner build..."
+          kubectl wait --for=condition=Ready pod/kaniko-runner-${{ github.run_id }} --timeout=120s 2>/dev/null || true
           while true; do
-            STATUS=$(kubectl get pod kaniko-${{ github.run_id }} -o jsonpath='{.status.phase}')
+            STATUS=$(kubectl get pod kaniko-runner-${{ github.run_id }} -o jsonpath='{.status.phase}')
             echo "Build status: $STATUS"
             if [ "$STATUS" = "Succeeded" ]; then
               echo "Build completed successfully!"
               break
             elif [ "$STATUS" = "Failed" ]; then
               echo "Build failed!"
-              kubectl logs kaniko-${{ github.run_id }}
+              kubectl logs kaniko-runner-${{ github.run_id }}
               exit 1
             fi
             sleep 10
@@ -84,15 +153,184 @@ jobs:
 
       - name: Show build logs
         if: always()
-        run: kubectl logs kaniko-${{ github.run_id }} 2>/dev/null || true
+        run: kubectl logs kaniko-runner-${{ github.run_id }} 2>/dev/null || true
 
       - name: Cleanup
         if: always()
-        run: kubectl delete pod kaniko-${{ github.run_id }} --ignore-not-found
+        run: kubectl delete pod kaniko-runner-${{ github.run_id }} --ignore-not-found
 
-      - name: Restart runner pod
-        if: success()
+  build-orchestrator:
+    needs: changes
+    if: needs.changes.outputs.orchestrator == 'true'
+    runs-on: self-hosted
+    env:
+      IMAGE: ghcr.io/jaybrto/gwa-orchestrator
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get metadata
+        id: meta
         run: |
-          echo "Restarting gwa-runner to pick up new image..."
-          kubectl rollout restart statefulset/gwa-runner
-          kubectl rollout status statefulset/gwa-runner --timeout=300s
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - name: Build orchestrator image
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: kaniko-orchestrator-${{ github.run_id }}
+            namespace: default
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: kaniko
+                image: gcr.io/kaniko-project/executor:latest
+                args:
+                  - "--dockerfile=Dockerfile.orchestrator"
+                  - "--context=git://github.com/${{ github.repository }}.git#refs/heads/${{ github.ref_name }}"
+                  - "--destination=${{ env.IMAGE }}:latest"
+                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }}"
+                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
+                  - "--cache=true"
+                  - "--cache-repo=${{ env.IMAGE }}/cache"
+                volumeMounts:
+                  - name: docker-config
+                    mountPath: /kaniko/.docker
+            volumes:
+              - name: docker-config
+                secret:
+                  secretName: ghcr-push-secret
+                  items:
+                    - key: .dockerconfigjson
+                      path: config.json
+          EOF
+
+      - name: Wait for build
+        run: |
+          echo "Waiting for orchestrator build..."
+          kubectl wait --for=condition=Ready pod/kaniko-orchestrator-${{ github.run_id }} --timeout=120s 2>/dev/null || true
+          while true; do
+            STATUS=$(kubectl get pod kaniko-orchestrator-${{ github.run_id }} -o jsonpath='{.status.phase}')
+            echo "Build status: $STATUS"
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "Build completed successfully!"
+              break
+            elif [ "$STATUS" = "Failed" ]; then
+              echo "Build failed!"
+              kubectl logs kaniko-orchestrator-${{ github.run_id }}
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Show build logs
+        if: always()
+        run: kubectl logs kaniko-orchestrator-${{ github.run_id }} 2>/dev/null || true
+
+      - name: Cleanup
+        if: always()
+        run: kubectl delete pod kaniko-orchestrator-${{ github.run_id }} --ignore-not-found
+
+  build-webhook:
+    needs: changes
+    if: needs.changes.outputs.webhook == 'true'
+    runs-on: self-hosted
+    env:
+      IMAGE: ghcr.io/jaybrto/gwa-webhook
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get metadata
+        id: meta
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - name: Build webhook image
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: kaniko-webhook-${{ github.run_id }}
+            namespace: default
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: kaniko
+                image: gcr.io/kaniko-project/executor:latest
+                args:
+                  - "--dockerfile=Dockerfile.webhook"
+                  - "--context=git://github.com/${{ github.repository }}.git#refs/heads/${{ github.ref_name }}"
+                  - "--destination=${{ env.IMAGE }}:latest"
+                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.sha_short }}"
+                  - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
+                  - "--cache=true"
+                  - "--cache-repo=${{ env.IMAGE }}/cache"
+                volumeMounts:
+                  - name: docker-config
+                    mountPath: /kaniko/.docker
+            volumes:
+              - name: docker-config
+                secret:
+                  secretName: ghcr-push-secret
+                  items:
+                    - key: .dockerconfigjson
+                      path: config.json
+          EOF
+
+      - name: Wait for build
+        run: |
+          echo "Waiting for webhook build..."
+          kubectl wait --for=condition=Ready pod/kaniko-webhook-${{ github.run_id }} --timeout=120s 2>/dev/null || true
+          while true; do
+            STATUS=$(kubectl get pod kaniko-webhook-${{ github.run_id }} -o jsonpath='{.status.phase}')
+            echo "Build status: $STATUS"
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "Build completed successfully!"
+              break
+            elif [ "$STATUS" = "Failed" ]; then
+              echo "Build failed!"
+              kubectl logs kaniko-webhook-${{ github.run_id }}
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Show build logs
+        if: always()
+        run: kubectl logs kaniko-webhook-${{ github.run_id }} 2>/dev/null || true
+
+      - name: Cleanup
+        if: always()
+        run: kubectl delete pod kaniko-webhook-${{ github.run_id }} --ignore-not-found
+
+  # Restart workloads after all builds complete
+  deploy:
+    needs: [changes, build-runner, build-orchestrator, build-webhook]
+    if: always() && !failure() && !cancelled()
+    runs-on: self-hosted
+    steps:
+      - name: Restart updated workloads
+        run: |
+          if [ "${{ needs.changes.outputs.runner }}" = "true" ] && [ "${{ needs.build-runner.result }}" = "success" ]; then
+            echo "Restarting gwa-runner..."
+            kubectl rollout restart statefulset/gwa-runner
+            kubectl rollout status statefulset/gwa-runner --timeout=300s
+          fi
+
+          if [ "${{ needs.changes.outputs.orchestrator }}" = "true" ] && [ "${{ needs.build-orchestrator.result }}" = "success" ]; then
+            echo "Restarting gwa-orchestrator..."
+            kubectl rollout restart deployment/gwa-orchestrator
+            kubectl rollout status deployment/gwa-orchestrator --timeout=120s
+          fi
+
+          if [ "${{ needs.changes.outputs.webhook }}" = "true" ] && [ "${{ needs.build-webhook.result }}" = "success" ]; then
+            echo "Restarting gwa-webhook..."
+            kubectl rollout restart deployment/gwa-webhook
+            kubectl rollout status deployment/gwa-webhook --timeout=120s
+          fi

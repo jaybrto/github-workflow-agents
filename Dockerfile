@@ -3,7 +3,7 @@ FROM oven/bun:1-debian AS builder
 
 WORKDIR /build
 
-COPY package.json bun.lockb* ./
+COPY package.json bun.lock* ./
 RUN bun install --frozen-lockfile || bun install
 
 COPY tsconfig.json ./
