@@ -10,6 +10,26 @@ import { createMachine, createActor, type Actor, type Snapshot } from "xstate";
 import { SessionState, type SessionEvent, type SessionContext } from "../shared/types.js";
 import { getDatabase } from "./db.js";
 import { publishStateChange } from "./amqp.js";
+import { takeSnapshot } from "./terminal-relay.js";
+import { log } from "./telemetry.js";
+
+// ---------------------------------------------------------------------------
+// Snapshot capture (fire-and-forget)
+// ---------------------------------------------------------------------------
+
+/**
+ * Capture a terminal snapshot during a state transition.
+ * Failures are logged as warnings and never block the transition.
+ */
+function captureTransitionSnapshot(context: SessionContext, eventType: string): void {
+  if (!context.sessionId || !context.tmuxWindow) return;
+  takeSnapshot(context.sessionId, context.tmuxWindow, eventType).catch((err) => {
+    log("warn", `Snapshot capture failed during ${eventType}`, {
+      sessionId: context.sessionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Machine definition
@@ -32,54 +52,102 @@ export const sessionMachine = createMachine({
   states: {
     idle: {
       on: {
-        START_PLANNING: { target: "planning" },
+        START_PLANNING: {
+          target: "planning",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "session_start");
+          },
+        },
         QUICK_START: { target: "inProgress" },
         CLOSE_WITHOUT_WORK: { target: "done" },
-        PAUSE_FOR_QUESTION: { target: "blocked" },
+        PAUSE_FOR_QUESTION: {
+          target: "blocked",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "session_blocked");
+          },
+        },
       },
     },
     planning: {
       on: {
-        INJECT_PROMPT: { target: "inProgress" },
+        INJECT_PROMPT: {
+          target: "inProgress",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "work_started");
+          },
+        },
         PAUSE_FOR_QUESTION: {
           target: "blocked",
           actions: ({ context }) => {
             context.previousState = SessionState.Planning;
+            captureTransitionSnapshot(context, "session_blocked");
           },
         },
         CANCEL_SESSION: { target: "idle" },
-        CLOSE_WITHOUT_WORK: { target: "done" },
+        CLOSE_WITHOUT_WORK: {
+          target: "done",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "session_complete");
+          },
+        },
         SKIP_IMPLEMENTATION: { target: "qa" },
       },
     },
     inProgress: {
       on: {
-        RUN_TESTS: { target: "qa" },
+        RUN_TESTS: {
+          target: "qa",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "qa_started");
+          },
+        },
         PAUSE_FOR_QUESTION: {
           target: "blocked",
           actions: ({ context }) => {
             context.previousState = SessionState.InProgress;
+            captureTransitionSnapshot(context, "session_blocked");
           },
         },
         REQUEST_REPLANNING: { target: "planning" },
         CANCEL_SESSION: { target: "idle" },
-        CLOSE_WITHOUT_WORK: { target: "done" },
-        SKIP_QA: { target: "review" },
+        CLOSE_WITHOUT_WORK: {
+          target: "done",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "session_complete");
+          },
+        },
+        SKIP_QA: {
+          target: "review",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "review_started");
+          },
+        },
       },
     },
     qa: {
       on: {
-        STATUS_UPDATE: { target: "review" },
+        STATUS_UPDATE: {
+          target: "review",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "review_started");
+          },
+        },
         RESUME_WITH_FAILURES: { target: "inProgress" },
         PAUSE_FOR_QUESTION: {
           target: "blocked",
           actions: ({ context }) => {
             context.previousState = SessionState.QA;
+            captureTransitionSnapshot(context, "session_blocked");
           },
         },
         REQUEST_REPLANNING: { target: "planning" },
         CANCEL_SESSION: { target: "idle" },
-        CLOSE_WITHOUT_WORK: { target: "done" },
+        CLOSE_WITHOUT_WORK: {
+          target: "done",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "session_complete");
+          },
+        },
       },
     },
     blocked: {
@@ -88,18 +156,30 @@ export const sessionMachine = createMachine({
           {
             target: "planning",
             guard: "previousWasPlanning",
+            actions: ({ context }) => {
+              captureTransitionSnapshot(context, "session_resumed");
+            },
           },
           {
             target: "inProgress",
             guard: "previousWasInProgress",
+            actions: ({ context }) => {
+              captureTransitionSnapshot(context, "session_resumed");
+            },
           },
           {
             target: "qa",
             guard: "previousWasQA",
+            actions: ({ context }) => {
+              captureTransitionSnapshot(context, "session_resumed");
+            },
           },
           {
             target: "review",
             guard: "previousWasReview",
+            actions: ({ context }) => {
+              captureTransitionSnapshot(context, "session_resumed");
+            },
           },
         ],
         CANCEL_SESSION: { target: "idle" },
@@ -107,12 +187,18 @@ export const sessionMachine = createMachine({
     },
     review: {
       on: {
-        DEPLOY_AND_CLEANUP: { target: "done" },
+        DEPLOY_AND_CLEANUP: {
+          target: "done",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "session_complete");
+          },
+        },
         REQUEST_RETEST: { target: "qa" },
         PAUSE_FOR_QUESTION: {
           target: "blocked",
           actions: ({ context }) => {
             context.previousState = SessionState.Review;
+            captureTransitionSnapshot(context, "session_blocked");
           },
         },
         REQUEST_REPLANNING: { target: "planning" },

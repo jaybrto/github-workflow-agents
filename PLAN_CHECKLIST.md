@@ -1412,31 +1412,31 @@ Cost: ~$0.003/verification (Sonnet + small image)
 - [ ] 19.28 Run `bun test` -- verify all pass
 
 ### Phase 20: Live Terminal Streaming & Snapshots
-- [ ] 20.1 Create `src/lib/terminal-relay.ts` -- main relay service module
-- [ ] 20.2 Implement `startPaneStream()` -- mkfifo + tmux pipe-pane + FIFO reader
-- [ ] 20.3 Implement `stopPaneStream()` -- detach pipe-pane + close FIFO + upload to MinIO
-- [ ] 20.4 Implement Bun WebSocket server with pub/sub topics per pane
-- [ ] 20.5 Implement mid-stream join -- `capture-pane -e -p` snapshot on WebSocket connect
-- [ ] 20.6 Implement asciicast v2 dual-write (NDJSON append alongside live stream)
-- [ ] 20.7 Add `terminal_snapshots` table to `schema.sql`
-- [ ] 20.8 Implement `takeSnapshot()` -- capture-pane + ansi-to-svg + SQLite store
-- [ ] 20.9 Integrate snapshot triggers with XState transition actions
-- [ ] 20.10 Install `ansi-to-svg` npm package (or fallback)
-- [ ] 20.11 Install `@aws-sdk/client-s3` for MinIO uploads
-- [ ] 20.12 Implement MinIO S3 upload on session completion
-- [ ] 20.13 Add presigned URL generation for recording playback
-- [ ] 20.14 Integrate `startPaneStream()` into session creation workflow
-- [ ] 20.15 Integrate `stopPaneStream()` into session cleanup workflow
-- [ ] 20.16 Add `build:terminal-relay` script to `package.json`
-- [ ] 20.17 Add Cloudflare tunnel route for terminal relay (`terminal.bto.bar` -> `:8080`)
-- [ ] 20.18 Add port 8080 to runner Service/StatefulSet
-- [ ] 20.19 Write tests: FIFO read + WebSocket publish round-trip
-- [ ] 20.20 Write tests: mid-stream join snapshot + incremental data
-- [ ] 20.21 Write tests: asciicast recording format validation
-- [ ] 20.22 Write tests: MinIO S3 upload
-- [ ] 20.23 Write tests: snapshot capture at lifecycle events
-- [ ] 20.24 Run `bun run typecheck` -- verify clean
-- [ ] 20.25 Run `bun test` -- verify all pass
+- [x] 20.1 Create `src/lib/terminal-relay.ts` -- main relay service module
+- [x] 20.2 Implement `startPaneStream()` -- mkfifo + tmux pipe-pane + FIFO reader
+- [x] 20.3 Implement `stopPaneStream()` -- detach pipe-pane + close FIFO + upload to MinIO
+- [x] 20.4 Implement Bun WebSocket server with pub/sub topics per pane
+- [x] 20.5 Implement mid-stream join -- `capture-pane -e -p` snapshot on WebSocket connect
+- [x] 20.6 Implement asciicast v2 dual-write (NDJSON append alongside live stream)
+- [x] 20.7 Add `terminal_snapshots` table to `schema.sql`
+- [x] 20.8 Implement `takeSnapshot()` -- capture-pane + ansi-to-svg + SQLite store
+- [x] 20.9 Integrate snapshot triggers with XState transition actions (XState integration being added)
+- [x] 20.10 Install `ansi-to-svg` npm package (or fallback)
+- [x] 20.11 Install `@aws-sdk/client-s3` for MinIO uploads
+- [x] 20.12 Implement MinIO S3 upload on session completion
+- [x] 20.13 Add presigned URL generation for recording playback
+- [x] 20.14 Integrate `startPaneStream()` into session creation workflow
+- [x] 20.15 Integrate `stopPaneStream()` into session cleanup workflow
+- [x] 20.16 Add `build:terminal-relay` script to `package.json`
+- [ ] 20.17 Add Cloudflare tunnel route for terminal relay (`terminal.bto.bar` -> `:8080`) (Manual config needed: terminal.bto.bar → :8080)
+- [x] 20.18 Add port 8080 to runner Service/StatefulSet
+- [x] 20.19 Write tests: FIFO read + WebSocket publish round-trip
+- [x] 20.20 Write tests: mid-stream join snapshot + incremental data
+- [x] 20.21 Write tests: asciicast recording format validation
+- [x] 20.22 Write tests: MinIO S3 upload
+- [x] 20.23 Write tests: snapshot capture at lifecycle events
+- [x] 20.24 Run `bun run typecheck` -- verify clean
+- [x] 20.25 Run `bun test` -- verify all pass
 
 ### Phase 21: Native Android App (Kotlin/Jetpack Compose)
 - [ ] 21.1 Create Android Studio project with Compose template (`bar.bto.gwa`)
@@ -1475,14 +1475,14 @@ Cost: ~$0.003/verification (Sonnet + small image)
 - [ ] 21.34 Test battery optimization whitelist prompt
 
 ### Phase 22: Behavioral Test Suite
-- [ ] 22.1 Write full session lifecycle test (Todo -> Done)
-- [ ] 22.2 Write blocked -> resume lifecycle test
-- [ ] 22.3 Write RabbitMQ command -> pod XState transition test
-- [ ] 22.4 Write orchestrator aggregation test (events from multiple pods)
-- [ ] 22.5 Write concurrent session isolation test
-- [ ] 22.6 Write cleanup artifact verification test (tmux + worktree + DB + MinIO)
-- [ ] 22.7 Write terminal relay integration test (stream start -> data -> snapshot -> upload)
-- [ ] 22.8 Run full test suite -- verify all pass
+- [x] 22.1 Write full session lifecycle test (Todo -> Done)
+- [x] 22.2 Write blocked -> resume lifecycle test
+- [x] 22.3 Write RabbitMQ command -> pod XState transition test
+- [x] 22.4 Write orchestrator aggregation test (events from multiple pods)
+- [x] 22.5 Write concurrent session isolation test
+- [x] 22.6 Write cleanup artifact verification test (tmux + worktree + DB + MinIO)
+- [x] 22.7 Write terminal relay integration test (stream start -> data -> snapshot -> upload)
+- [x] 22.8 Run full test suite -- verify all pass
 
 ### Phase 23: v4.0 Documentation & Cleanup
 - [ ] 23.1 Update `README.md` -- architecture, tech stack, orchestrator, RabbitMQ

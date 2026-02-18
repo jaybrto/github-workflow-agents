@@ -8,6 +8,8 @@ GitHub Workflow Agents (GWA) v4.0 is a complete architectural overhaul. The syst
 
 ## Current State
 
+**Completed Phases:** 15 (Prerequisites), 16 (Security Hardening), 17 (XState), 18 (Remove Redis), 19 (RabbitMQ + Orchestrator), 20 (Terminal Streaming — except 20.17 tunnel route), 22 (Behavioral Tests)
+
 ### What's Working
 - **Webhook deployed**: `gwa-webhook` pod running in K8s default namespace
 - **Cloudflare tunnel**: `git-hooks.bto.bar` routes to webhook via `bto-services-prod` tunnel
@@ -24,6 +26,9 @@ GitHub Workflow Agents (GWA) v4.0 is a complete architectural overhaul. The syst
 - **Binaries deployed**: `gwa-*` binaries in the pod at `/usr/local/bin/`
 - **SQLite persistence**: All session state, XState snapshots, activity logs (WAL mode)
 - **Behavioral tests**: Full lifecycle test suite
+
+### Remaining Manual Steps
+- **Cloudflare tunnel route for terminal relay**: `terminal.bto.bar` → `:8080` (Phase 20.17 — manual infrastructure config)
 
 ### What Was Removed in v4.0
 - **Redis**: Completely removed (ioredis, instrumentation, redis.ts, debug-redis.ts)
