@@ -10,6 +10,7 @@ import * as tmux from "./lib/tmux.js";
 import * as git from "./lib/git.js";
 import * as claude from "./lib/claude.js";
 import { ClaudeAuthError } from "./lib/claude.js";
+import { ClaudeDialogError } from "./lib/dialog-handler.js";
 import { startREPL } from "./lib/repl-session.js";
 import { analyzeTaskComplexity } from "./lib/task-analyzer.js";
 import { generateComment } from "./lib/comment-generator.js";
@@ -138,6 +139,8 @@ async function main() {
 
     if (error instanceof ClaudeAuthError) {
       await postAuthStuckComment(ctx, error.message);
+    } else if (error instanceof ClaudeDialogError) {
+      await postDialogStuckComment(ctx, error.message, error.capturedOutput);
     } else {
       await github.postError(
         ctx.owner,
@@ -575,6 +578,52 @@ async function postAuthStuckComment(ctx: PRContext, details: string): Promise<vo
     Metrics.recordGitHubApiCall("postPRComment.authError", true);
   } catch (commentError) {
     log("error", "Failed to post auth error comment", {
+      pr: ctx.pr,
+      error: commentError instanceof Error ? commentError.message : String(commentError),
+    });
+  }
+}
+
+/**
+ * Post a GitHub comment notifying that the pod is stuck on an interactive dialog.
+ */
+async function postDialogStuckComment(
+  ctx: PRContext,
+  details: string,
+  capturedOutput: string
+): Promise<void> {
+  const podName = process.env.POD_NAME || "unknown";
+  const timestamp = new Date().toISOString();
+
+  const body = [
+    `**Claude Code interactive dialog failure**`,
+    ``,
+    `The pod encountered an interactive dialog that could not be auto-dismissed.`,
+    ``,
+    `**Details:** ${details.slice(0, 500)}`,
+    ``,
+    `<details>`,
+    `<summary>Captured terminal output</summary>`,
+    ``,
+    "```",
+    capturedOutput.slice(0, 2000),
+    "```",
+    ``,
+    `</details>`,
+    ``,
+    `**Action required:**`,
+    `1. Check if this is a new dialog type that needs to be added to the dialog handler`,
+    `2. Manually dismiss the dialog: \`kubectl exec -it ${podName} -- tmux attach\``,
+    `3. Retry by commenting \`@claude\` on this PR`,
+    ``,
+    `*Pod: \`${podName}\` | Detected at: ${timestamp}*`,
+  ].join("\n");
+
+  try {
+    await github.postPRComment(ctx.owner, ctx.repoName, ctx.pr, body);
+    Metrics.recordGitHubApiCall("postPRComment.dialogError", true);
+  } catch (commentError) {
+    log("error", "Failed to post dialog error comment", {
       pr: ctx.pr,
       error: commentError instanceof Error ? commentError.message : String(commentError),
     });
