@@ -104,6 +104,8 @@ jobs:
         run: |
           echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+          PROXY_IP=$(kubectl get svc gitea-auth-proxy -o jsonpath='{.spec.clusterIP}')
+          echo "proxy_ip=${PROXY_IP}" >> "$GITHUB_OUTPUT"
 
       - name: Build runner image
         run: |
@@ -116,6 +118,10 @@ jobs:
             namespace: default
           spec:
             restartPolicy: Never
+            hostAliases:
+              - ip: "${{ steps.meta.outputs.proxy_ip }}"
+                hostnames:
+                  - gitea.k3s.bto.bar
             containers:
               - name: kaniko
                 image: gcr.io/kaniko-project/executor:latest
@@ -128,7 +134,7 @@ jobs:
                   - "--cache=true"
                   - "--cache-repo=${DEST}/cache"
                   - "--insecure-registry=${{ env.REGISTRY }}"
-                  - "--skip-tls-verify-registry=gitea.k3s.bto.bar"
+                  - "--insecure-registry=gitea.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
@@ -182,6 +188,8 @@ jobs:
         run: |
           echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+          PROXY_IP=$(kubectl get svc gitea-auth-proxy -o jsonpath='{.spec.clusterIP}')
+          echo "proxy_ip=${PROXY_IP}" >> "$GITHUB_OUTPUT"
 
       - name: Build orchestrator image
         run: |
@@ -194,6 +202,10 @@ jobs:
             namespace: default
           spec:
             restartPolicy: Never
+            hostAliases:
+              - ip: "${{ steps.meta.outputs.proxy_ip }}"
+                hostnames:
+                  - gitea.k3s.bto.bar
             containers:
               - name: kaniko
                 image: gcr.io/kaniko-project/executor:latest
@@ -206,7 +218,7 @@ jobs:
                   - "--cache=true"
                   - "--cache-repo=${DEST}/cache"
                   - "--insecure-registry=${{ env.REGISTRY }}"
-                  - "--skip-tls-verify-registry=gitea.k3s.bto.bar"
+                  - "--insecure-registry=gitea.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
@@ -260,6 +272,8 @@ jobs:
         run: |
           echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+          PROXY_IP=$(kubectl get svc gitea-auth-proxy -o jsonpath='{.spec.clusterIP}')
+          echo "proxy_ip=${PROXY_IP}" >> "$GITHUB_OUTPUT"
 
       - name: Build webhook image
         run: |
@@ -272,6 +286,10 @@ jobs:
             namespace: default
           spec:
             restartPolicy: Never
+            hostAliases:
+              - ip: "${{ steps.meta.outputs.proxy_ip }}"
+                hostnames:
+                  - gitea.k3s.bto.bar
             containers:
               - name: kaniko
                 image: gcr.io/kaniko-project/executor:latest
@@ -284,7 +302,7 @@ jobs:
                   - "--cache=true"
                   - "--cache-repo=${DEST}/cache"
                   - "--insecure-registry=${{ env.REGISTRY }}"
-                  - "--skip-tls-verify-registry=gitea.k3s.bto.bar"
+                  - "--insecure-registry=gitea.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
