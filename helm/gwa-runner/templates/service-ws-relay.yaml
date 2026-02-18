@@ -1,0 +1,19 @@
+{{- if .Values.terminalRelay.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gwa.fullname" . }}-ws-relay
+  labels:
+    {{- include "gwa.runnerLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ws-relay
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gwa.runnerSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: ws-relay
+      port: {{ .Values.terminalRelay.port }}
+      targetPort: {{ .Values.terminalRelay.port }}
+      protocol: TCP
+{{- end }}

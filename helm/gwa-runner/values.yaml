@@ -127,7 +127,7 @@ cleanup:
       memory: 256Mi
       cpu: 200m
 
-# Service configuration
+# Service configuration (headless for StatefulSet DNS)
 service:
   type: ClusterIP
   headless: true
@@ -135,6 +135,15 @@ service:
     - name: ssh
       port: 22
       targetPort: 22
+
+# Terminal relay WebSocket service (non-headless ClusterIP)
+# Reachable via:
+#   Cloudflare Tunnel: terminal.bto.bar → bto-services-prod → this service
+#   WARP client:       ClusterIP:8080 (via 10.43.0.0/16 routing)
+#   Host network:      ClusterIP:8080 or K8s DNS
+terminalRelay:
+  enabled: true
+  port: 8080
 
 # Secret reference (must be created separately)
 secrets:
