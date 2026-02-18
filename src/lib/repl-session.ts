@@ -15,7 +15,8 @@ import {
 } from "./tmux.js";
 import { getDatabase } from "./db.js";
 import { log, withSpan, Metrics } from "./telemetry.js";
-import { ClaudeAuthError, detectAuthFailure } from "./claude.js";
+import { ClaudeAuthError, detectAuthFailure, preloadClaudeConfig } from "./claude.js";
+import { handleDialogIfPresent, ClaudeDialogError } from "./dialog-handler.js";
 
 // ============================================================================
 // TYPES
@@ -196,6 +197,9 @@ export async function startREPL(
       // Store session in SQLite
       storeSession(session);
 
+      // Pre-load Claude config to prevent first-run dialogs
+      preloadClaudeConfig();
+
       // Start Claude in interactive mode (no --print flag)
       await sendCommand(tmuxWindow, "claude");
 
@@ -220,6 +224,23 @@ export async function startREPL(
           `CLAUDE_CODE_OAUTH_TOKEN may be expired or invalid. ` +
           `Captured output: ${paneOutput.slice(0, 300)}`
         );
+      }
+
+      // Check for interactive dialogs blocking Claude startup
+      try {
+        await handleDialogIfPresent(tmuxWindow);
+      } catch (error) {
+        if (error instanceof ClaudeDialogError) {
+          log("error", "Claude stuck on interactive dialog in REPL", {
+            sessionId,
+            tmuxWindow,
+            capturedOutput: error.capturedOutput.slice(0, 500),
+          });
+          await killWindow(tmuxWindow);
+          deleteSession(sessionId);
+          throw error;
+        }
+        throw error;
       }
 
       // Send the initial prompt

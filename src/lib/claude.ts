@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from "fs";
+import { join } from "path";
 import type { ClaudeStreamEvent } from "./types.js";
 import { withSpan, Metrics, log } from "./telemetry.js";
 
@@ -59,6 +61,116 @@ export function checkAuthEnvironment(): { ok: boolean; error?: string } {
   }
 
   return { ok: true };
+}
+
+// ============================================================================
+// CONFIG PRE-LOADING
+// ============================================================================
+
+/**
+ * Pre-load Claude Code CLI configuration to prevent first-run interactive dialogs.
+ * Writes credentials and settings files so Claude starts without prompting.
+ *
+ * Safe to call multiple times — merges into existing settings and only
+ * writes credentials if the env var is set and file doesn't exist.
+ */
+export function preloadClaudeConfig(): void {
+  const home = process.env.HOME;
+  if (!home) {
+    log("warn", "HOME not set, skipping Claude config pre-load");
+    return;
+  }
+
+  const claudeDir = join(home, ".claude");
+
+  // Ensure ~/.claude/ exists
+  if (!existsSync(claudeDir)) {
+    mkdirSync(claudeDir, { recursive: true });
+  }
+
+  // 1. Write credentials + account info from env vars
+  const credentialsPath = join(claudeDir, ".credentials.json");
+  const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+
+  if (oauthToken) {
+    let existingCreds: Record<string, unknown> = {};
+    if (existsSync(credentialsPath)) {
+      try {
+        existingCreds = JSON.parse(readFileSync(credentialsPath, "utf-8"));
+      } catch {
+        // Corrupted file, overwrite
+      }
+    }
+
+    let credsChanged = false;
+
+    // Set/update OAuth token
+    if (existingCreds.oauthToken !== oauthToken) {
+      existingCreds.oauthToken = oauthToken;
+      credsChanged = true;
+    }
+
+    // Set oauthAccount from env vars (prevents account selection dialog)
+    const accountUuid = process.env.CLAUDE_OAUTH_ACCOUNT_UUID;
+    if (accountUuid && !existingCreds.oauthAccount) {
+      existingCreds.oauthAccount = {
+        accountUuid,
+        emailAddress: process.env.CLAUDE_OAUTH_EMAIL || "",
+        organizationUuid: process.env.CLAUDE_OAUTH_ORG_UUID || "",
+        hasExtraUsageEnabled: process.env.CLAUDE_OAUTH_EXTRA_USAGE !== "false",
+        billingType: process.env.CLAUDE_OAUTH_BILLING_TYPE || "stripe_subscription",
+        displayName: process.env.CLAUDE_OAUTH_DISPLAY_NAME || "GWA",
+      };
+      credsChanged = true;
+    }
+
+    if (credsChanged) {
+      writeFileSync(
+        credentialsPath,
+        JSON.stringify(existingCreds, null, 2),
+        { mode: 0o600 }
+      );
+      log("info", "Wrote Claude credentials file", { path: credentialsPath });
+    }
+  }
+
+  // 2. Merge headless settings into settings.json
+  const settingsPath = join(claudeDir, "settings.json");
+  const headlessSettings: Record<string, unknown> = {
+    // Skip the "Bypass Permissions" confirmation dialog
+    skipDangerousModePermissionPrompt: true,
+    // Set default theme to avoid theme selection prompt
+    theme: "dark",
+    // Disable auto-updates to avoid update prompts
+    hasCompletedOnboarding: true,
+  };
+
+  let existing: Record<string, unknown> = {};
+  if (existsSync(settingsPath)) {
+    try {
+      existing = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    } catch {
+      log("warn", "Failed to parse existing settings.json, overwriting");
+    }
+  }
+
+  // Only write if any key is missing
+  let needsWrite = false;
+  for (const [key, value] of Object.entries(headlessSettings)) {
+    if (!(key in existing)) {
+      existing[key] = value;
+      needsWrite = true;
+    }
+  }
+
+  if (needsWrite) {
+    writeFileSync(settingsPath, JSON.stringify(existing, null, 2), {
+      mode: 0o600,
+    });
+    log("info", "Updated Claude settings.json with headless defaults", {
+      path: settingsPath,
+    });
+  }
 }
 
 // ============================================================================
@@ -152,6 +264,9 @@ export async function runClaude(options: ClaudeOptions): Promise<ClaudeResult> {
  */
 async function runClaudeInternal(options: ClaudeOptions): Promise<ClaudeResult> {
   const { prompt, workingDir, continueSession = false, timeout = 3600000 } = options;
+
+  // Ensure config is pre-loaded before spawning Claude
+  preloadClaudeConfig();
 
   const args: string[] = [];
 

@@ -81,6 +81,25 @@ spec:
                 secretKeyRef:
                   name: gwa-secrets
                   key: github-token
+            # Claude OAuth account metadata (prevents first-run dialogs)
+            - name: CLAUDE_OAUTH_ACCOUNT_UUID
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: oauth-account-uuid
+                  optional: true
+            - name: CLAUDE_OAUTH_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: oauth-email
+                  optional: true
+            - name: CLAUDE_OAUTH_ORG_UUID
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: oauth-org-uuid
+                  optional: true
             # OpenTelemetry Configuration
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://alloy.alloy.svc.cluster.local:4317"

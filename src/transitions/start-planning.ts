@@ -18,6 +18,8 @@ import {
   ensureCustomFields,
 } from "../lib/projects.js";
 import { generateComment } from "../lib/comment-generator.js";
+import { preloadClaudeConfig } from "../lib/claude.js";
+import { handleDialogIfPresent } from "../lib/dialog-handler.js";
 import { createSessionActor, persistSnapshot, getStateName } from "../lib/state-machine.js";
 import { startPaneStream } from "../lib/terminal-relay.js";
 import { SessionState } from "../shared/types.js";
@@ -304,10 +306,14 @@ Use /handoff if you need to pause and resume later.`;
 
   // 10. Start Claude REPL
   log("info", "Starting Claude REPL");
+  preloadClaudeConfig();
   await tmux.sendCommand(windowNum, "claude --dangerously-skip-permissions");
 
   // Wait for REPL to initialize
   await new Promise((resolve) => setTimeout(resolve, 3000));
+
+  // Check for interactive dialogs blocking Claude startup
+  await handleDialogIfPresent(windowNum);
 
   // 11. Send planning prompt
   log("info", "Sending planning prompt");
