@@ -1,207 +1,152 @@
-# Handoff: GWA v4.0 — Complete Architecture
+# Handoff: Phase 20/22 Completion + Terminal Relay Service
 
-## Overview
+**Date:** 2026-02-17
+**Branch:** `main`
+**Version:** `4.0.0`
+**Working tree:** Clean, up to date with origin
 
-**Version:** 4.0.0 (February 17, 2026)
+---
 
-GitHub Workflow Agents (GWA) v4.0 is a complete architectural overhaul. The system now uses XState v5 for state management, RabbitMQ for event distribution, and a dedicated orchestrator service for cross-pod coordination. Redis has been fully removed.
+## Session Summary
+
+### What Was Done
+
+1. **Branch merge analysis and merge** — Checked out `claude/review-cli-github-integration-9tvfF`, verified it merges cleanly into main (only 1 un-merged docs commit), merged it. Auth detection code was already on main via PR #7.
+
+2. **HANDOFF_AUTH_FIX.md analysis** — Confirmed all three auth detection layers (prevention, detection, notification) are fully implemented on main. No code work remaining from that handoff.
+
+3. **Phase 20 (Terminal Streaming) completion** — Integrated `takeSnapshot()` into all XState state machine transitions via fire-and-forget async calls. Snapshots now auto-capture on every state change (idle→planning, planning→inProgress, blocked, done, error, etc.). Failures never block transitions.
+
+4. **Phase 22 (Behavioral Tests) completion** — All 7 behavioral test files were already implemented (334 tests, 0 failures). Marked all checklist items as complete.
+
+5. **Terminal relay WebSocket service** — Created a non-headless `ClusterIP` service (`gwa-runner-ws-relay`) on port 8080, separate from the headless StatefulSet service. Supports three connectivity paths: Cloudflare Tunnel (`terminal.bto.bar`), WARP client (direct ClusterIP), and host network. Cloudflare Tunnel route configured on `bto-services-prod`.
+
+### Commits (this session)
+
+| SHA | Message |
+|-----|---------|
+| `08b8b47` | `feat(phase20): integrate XState snapshot triggers, update checklists` |
+| `a25910d` | `Merge branch 'claude/review-cli-github-integration-9tvfF'` |
+| `560dc47` | `infra(k8s): add non-headless ClusterIP service for terminal relay WebSocket` |
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/lib/state-machine.ts` | Added `captureTransitionSnapshot()` helper + snapshot actions on all state transitions |
+| `PLAN_CHECKLIST.md` | Marked Phase 20 (20.1-20.16, 20.18-20.25) and Phase 22 (22.1-22.8) as complete |
+| `HANDOFF.md` | Updated current state with completed phases |
+| `PLAN.md` | Added auth troubleshooting section to Phase 11 (from branch merge) |
+| `HANDOFF_AUTH_FIX.md` | New file — auth fix handoff documentation (from branch merge) |
+| `docs/plans/2026-02-17-phase20-22-completion-design.md` | Design doc for Phase 20/22 work |
+| `helm/gwa-runner/templates/service-ws-relay.yaml` | New Helm template for non-headless ws-relay service |
+| `helm/gwa-runner/values.yaml` | Added `terminalRelay` config section (enabled, port 8080) |
+| `k8s/gwa-runner-service.yaml` | Split into headless (SSH) + non-headless (ws-relay) services |
+
+---
 
 ## Current State
 
-**Completed Phases:** 15 (Prerequisites), 16 (Security Hardening), 17 (XState), 18 (Remove Redis), 19 (RabbitMQ + Orchestrator), 20 (Terminal Streaming — except 20.17 tunnel route), 22 (Behavioral Tests)
-
 ### What's Working
-- **Webhook deployed**: `gwa-webhook` pod running in K8s default namespace
-- **Cloudflare tunnel**: `git-hooks.bto.bar` routes to webhook via `bto-services-prod` tunnel
-- **GitHub App**: `Workflow-Agents-BTO` installed on `bto-labs` org with `projects_v2_item` events
-- **XState v5 state machine**: 7 states, 38 transitions with snapshot persistence in SQLite
-- **RabbitMQ AMQP backbone**: Topic exchanges for events, commands, and heartbeats
-- **Orchestrator service**: REST API, session aggregator, push bridge (ntfy.sh)
-- **Terminal streaming**: WebSocket relay on port 8080 with mid-stream join
-- **Session recordings**: Asciicast v2 format with MinIO upload and presigned URLs
-- **Terminal snapshots**: SVG via ansi-to-svg stored in SQLite
-- **Security**: Timing-safe HMAC verification, webhook deduplication (1-hour TTL)
-- **Shared types**: Canonical types in `src/shared/types.ts`
-- **Cross-org access**: Webhook resolves issue details from `bto-labs` before triggering workflows
-- **Binaries deployed**: `gwa-*` binaries in the pod at `/usr/local/bin/`
-- **SQLite persistence**: All session state, XState snapshots, activity logs (WAL mode)
-- **Behavioral tests**: Full lifecycle test suite
+- XState v5 state machine with snapshot triggers on all transitions
+- RabbitMQ AMQP backbone (commands down, events up)
+- SQLite per pod (Redis fully removed)
+- Orchestrator service (webhook handler, REST API, push bridge, aggregator)
+- Terminal relay code (FIFO streaming, WebSocket server, asciicast recording, MinIO upload, SVG snapshots)
+- Auth detection (prevention, detection, notification — three-layer fix)
+- 334 tests passing, 0 failures
+- All behavioral tests (lifecycle, blocked-resume, AMQP transitions, orchestrator aggregation, concurrent sessions, cleanup artifacts, terminal integration)
 
-### Remaining Manual Steps
-- **Cloudflare tunnel route for terminal relay**: `terminal.bto.bar` → `:8080` (Phase 20.17 — manual infrastructure config)
+### What's NOT Working / Not Deployed
+- Terminal relay process is not started on the pod (no `import.meta.main` auto-start, not in entrypoint)
+- `gwa-runner-ws-relay` K8s service not applied to cluster (committed but not deployed)
+- `terminal.bto.bar` tunnel route configured but returns 502 (no backend running)
+- Phase 21 (Android app) not started
+- Phase 23 (deployment) not started
 
-### What Was Removed in v4.0
-- **Redis**: Completely removed (ioredis, instrumentation, redis.ts, debug-redis.ts)
-- **workflow_dispatch chain**: Replaced by AMQP command publishing
+### Checklist Status
+- Phase 20: All items [x] except 20.17 (Cloudflare tunnel route — configured in dashboard, not in code)
+- Phase 22: All items [x]
+- Phase 23: All items [ ] (next milestone)
 
-## Architecture
+---
 
+## What Needs to Happen Next
+
+### Phase 23: Deployment (Priority)
+
+This is the deployment milestone. Key items:
+
+1. **Terminal relay startup** — Add `import.meta.main` auto-start to `src/lib/terminal-relay.ts` and start it from the entrypoint in `helm/gwa-runner/templates/configmap.yaml` (code was written and reverted — see session notes below)
+
+2. **Apply K8s service** — `kubectl apply -f k8s/gwa-runner-service.yaml` to create `gwa-runner-ws-relay` (or let Helm handle it)
+
+3. **Build and push images** — `23.7` runner image, `23.8` orchestrator image
+
+4. **Deploy to K3s** — `23.9` orchestrator, `23.10` runner
+
+5. **End-to-end test** — `23.11` webhook → RabbitMQ → pod → MQTT → mobile + ntfy push
+
+### Terminal Relay Startup (Reverted Code)
+
+During this session, we wrote but reverted these changes (save for Phase 23):
+
+**`src/lib/terminal-relay.ts`** — Add at end of file:
+```typescript
+if (import.meta.main) {
+  const port = getWsPort();
+  console.log(`[terminal-relay] Starting standalone WebSocket server...`);
+  startWebSocketServer(port);
+  const handleShutdown = async () => {
+    console.log("[terminal-relay] Shutting down...");
+    await shutdown();
+    process.exit(0);
+  };
+  process.on("SIGTERM", handleShutdown);
+  process.on("SIGINT", handleShutdown);
+}
 ```
-GitHub Project (bto-labs)
-       |
-       | projects_v2_item webhook
-       v
-+------------------------------------------+
-|         Orchestrator Service              |
-|  Webhook Handler | REST API (port 3001)  |
-|  Push Bridge     | Session Aggregator    |
-+---------+--------------------------------+
-          | AMQP commands       ^ AMQP events
-          v                     |
-+------------------------------------------+
-|              RabbitMQ                     |
-|  gwa.commands | gwa.events | gwa.heartbeat|
-+---------+----------------------------+---+
-          | commands                   ^ events
-          v                            |
-+------------------------------------------+
-|        GWA Runner Pod (StatefulSet)       |
-|  XState v5   | Claude Code (tmux)        |
-|  Terminal Relay (WS :8080)  | SQLite     |
-|  OTEL -> Alloy | MinIO Upload            |
-+------------------------------------------+
-```
 
-## Key Components
-
-### XState v5 State Machine (`src/lib/state-machine.ts`)
-- 7 states: idle, planning, inProgress, qa, blocked, review, done
-- 38 column-to-event mappings matching all valid GitHub Project transitions
-- Guards for blocked state return (previousWasPlanning, previousWasInProgress, etc.)
-- Snapshot persistence to SQLite `sessions.xstate_snapshot` column
-- Automatic AMQP state change publishing on transitions
-
-### RabbitMQ AMQP (`src/lib/amqp.ts`)
-- Singleton connection with auto-reconnect (exponential backoff)
-- Publisher confirms via ConfirmChannel
-- Three topic exchanges: `gwa.events`, `gwa.commands`, `gwa.heartbeat`
-- 30-second heartbeat interval with pod health monitoring
-- Graceful shutdown with SIGTERM/SIGINT handlers
-
-### Orchestrator (`src/orchestrator/`)
-- **index.ts**: Service entry point, initializes its own SQLite DB, AMQP, REST API
-- **webhook-handler.ts**: HMAC verification, deduplication, publishes AMQP commands
-- **session-aggregator.ts**: Subscribes to `gwa.events.#`, maintains cross-pod state
-- **push-bridge.ts**: ntfy.sh notifications with debounce (30s) and rate limiting (5/min)
-- **rest-api.ts**: Sessions, answers, snapshots, recordings endpoints
-
-### Terminal Relay (`src/lib/terminal-relay.ts`)
-- WebSocket server on port 8080 at `/ws/{sessionId}`
-- tmux pipe-pane -> FIFO -> reader process -> WebSocket broadcast
-- Asciicast v2 recording written alongside stream
-- SVG snapshots via ansi-to-svg stored in SQLite
-- MinIO upload on stream stop with presigned URL generation
-
-### Shared Types (`src/shared/types.ts`)
-- `SessionState` enum (7 states)
-- `SessionEvent` union type (17 event types)
-- `AmqpMessage` interface (routing key, payload, timestamp, sessionId, traceId)
-- `PushNotification` interface (type, title, body, priority, tags)
-- `TerminalSnapshot` interface (sessionId, svgData, eventType, capturedAt)
-- `RecordingMetadata` interface (s3Key, durationMs, sizeBytes, format)
-- `ColumnTransition` interface (from, to, itemId, projectId)
-- `SessionContext` interface (XState machine context)
-
-## Handler Reference
-
-Each handler is triggered by a column transition and executes in the workflow:
-
-| Handler | Transition | What It Does |
-|---------|------------|-------------|
-| `start-planning` | Todo -> Planning | Create session, start Claude REPL for planning |
-| `inject-prompt` | Planning -> In Progress | Send implementation prompt to existing session |
-| `run-playwright` | In Progress -> QA | Run Playwright e2e tests |
-| `status-update` | QA -> Review | Post summary comment, notify reviewers |
-| `deploy-and-cleanup` | Review -> Done | Merge PR, cleanup session |
-| `pause-for-question` | Any -> Blocked | Pause session, post question to issue |
-| `send-answer` | Blocked -> Any | Resume session with answer |
-| `resume-with-failures` | QA -> In Progress | Resume with test failure context |
-| `request-retest` | Review -> QA | Re-run tests |
-| `request-replanning` | Any -> Planning | Reset session to planning phase |
-| `resume-implementation` | Review -> In Progress | Resume implementation work |
-| `cancel-session` | Any -> Todo | Cancel and cleanup session |
-| `reopen-issue` | Done -> Any | Create new session for reopened issue |
-| `quick-start` | Todo -> In Progress | Skip planning, start implementation directly |
-| `close-without-work` | Any -> Done | Close without implementation |
-| `skip-qa` | In Progress -> Review | Skip tests, go to review |
-| `skip-implementation` | Planning -> QA | Pre-built solution, skip to QA |
-
-## Files to Understand
-
-### Core v4.0 Files
-- **`src/shared/types.ts`**: All canonical types
-- **`src/lib/state-machine.ts`**: XState v5 session lifecycle
-- **`src/lib/amqp.ts`**: RabbitMQ AMQP client
-- **`src/lib/terminal-relay.ts`**: WebSocket streaming, snapshots, recordings
-- **`src/orchestrator/index.ts`**: Orchestrator service entry point
-
-### Webhook Handler
-- **`src/webhook/handler.ts`**: Receives GitHub webhooks, maps transitions to handlers
-- **`src/orchestrator/webhook-handler.ts`**: HMAC-verified webhook -> AMQP commands
-
-### CLI Tools
-- **`src/architect.ts`**: Creates plans, spawns workers
-- **`src/cleanup.ts`**: Cleans up sessions
-- **`src/respond.ts`**: Handles @claude-answer responses
-- **`src/orchestrate.ts`**: Main PR orchestration
-
-### Database
-- **`schema.sql`**: SQLite schema
-- **`src/lib/db.ts`**: Database client with WAL mode
-
-## Environment Variables
-
+**`helm/gwa-runner/templates/configmap.yaml`** — Add before `exec tail -f /dev/null`:
 ```bash
-# RabbitMQ
-RABBITMQ_URL=amqp://guest:guest@rabbitmq.default.svc.cluster.local:5672
-
-# MinIO
-MINIO_ENDPOINT=http://minio.default.svc.cluster.local:9000
-MINIO_BUCKET=gwa-recordings
-MINIO_ACCESS_KEY=<access-key>
-MINIO_SECRET_KEY=<secret-key>
-
-# Push Notifications
-NTFY_URL=https://ntfy.bto.bar/gwa
-
-# Orchestrator
-ORCHESTRATOR_PORT=3001
-ORCHESTRATOR_DB_PATH=/tmp/gwa-orchestrator.db
-
-# Terminal Streaming
-WS_PORT=8080
-
-# Telemetry
-OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy.alloy.svc.cluster.local:4317
-OTEL_SERVICE_NAME=github-workflow-agents
-OTEL_SERVICE_VERSION=4.0.0
+RELAY_BIN="/opt/gwa/gwa-terminal-relay"
+if [ -x "${RELAY_BIN}" ]; then
+  echo "[GWA] Starting terminal relay on port 8080..."
+  WS_PORT=8080 "${RELAY_BIN}" &
+  RELAY_PID=$!
+  echo "[GWA] Terminal relay started (PID: ${RELAY_PID})"
+fi
 ```
 
-## Secrets Required
+### Phase 21: Android App (Future)
 
-In K8s default namespace:
-- `gwa-secrets`: Contains `github-token`, `claude-oauth-token`, `anthropic-api-key`
-- `gwa-webhook-secrets`: Contains `github-app-secret`
-- `ghcr-pull-secret`: Docker registry credentials for GHCR
+Not started. 34 items in PLAN_CHECKLIST.md. Independent of other phases.
 
-## Debugging Commands
+---
 
-```bash
-# Webhook logs
-kubectl logs -l component=webhook -f
+## Key Files
 
-# Runner pod logs
-kubectl logs gwa-runner-0 -f
-
-# Orchestrator logs
-kubectl logs -l component=orchestrator -f
-
-# Exec into runner pod
-kubectl exec -it gwa-runner-0 -- bash
-
-# Check RabbitMQ queues
-kubectl exec -it rabbitmq-0 -- rabbitmqctl list_queues
-
-# Check workflow runs
-gh run list --workflow=project-sync.yml --limit=10
 ```
+src/lib/state-machine.ts          # XState v5 + snapshot triggers (modified this session)
+src/lib/terminal-relay.ts         # Terminal streaming (needs import.meta.main for Phase 23)
+helm/gwa-runner/templates/
+  service-ws-relay.yaml           # New: non-headless ClusterIP service (created this session)
+  configmap.yaml                  # Entrypoint (needs relay startup for Phase 23)
+  statefulset.yaml                # Pod spec
+  service.yaml                    # Headless service for StatefulSet DNS
+helm/gwa-runner/values.yaml       # Added terminalRelay config (modified this session)
+k8s/gwa-runner-service.yaml       # Raw manifests: headless + ws-relay (modified this session)
+PLAN.md                           # Full implementation plan (Phases 1-23)
+PLAN_CHECKLIST.md                 # Phase checklists (updated this session)
+PLAN_V4.md                        # v4.0 upgrade plan (9 phases, 154 items)
+HANDOFF_AUTH_FIX.md               # Auth fix handoff (merged this session)
+```
+
+## Constraints
+
+- **Bun + TypeScript only** — no Python
+- **No hardcoded secrets** — K8s secrets only
+- **SDK-first** — `@octokit/rest`, `@kubernetes/client-node`, `amqplib`, `xstate`
+- **Conventional Commits** — `feat`, `fix`, `refactor`, `docs`, `test`, `infra`, `chore`
+- **Pre-commit**: Always run `bun run typecheck` before committing
+- **Version bumps**: Required when modifying source files
