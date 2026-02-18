@@ -1,0 +1,9 @@
+FROM oven/bun:1-alpine
+WORKDIR /app
+COPY package.json bun.lock* ./
+RUN bun install --production
+COPY src/ src/
+COPY schema.sql .
+RUN bun build src/orchestrator/index.ts --compile --outfile /usr/local/bin/gwa-orchestrator
+CMD ["/usr/local/bin/gwa-orchestrator"]
+EXPOSE 3001

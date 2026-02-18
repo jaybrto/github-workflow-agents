@@ -47,6 +47,10 @@ spec:
           image: ghcr.io/jaybrto/github-workflow-agents:latest
           imagePullPolicy: Always
           command: ["/bin/bash", "/scripts/entrypoint.sh"]
+          ports:
+            - name: ws-relay
+              containerPort: 8080
+              protocol: TCP
           resources:
             requests:
               memory: "4Gi"

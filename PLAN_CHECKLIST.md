@@ -1310,22 +1310,216 @@ Cost: ~$0.003/verification (Sonnet + small image)
 
 ---
 
-**Version:** 3.4 (Enhanced Session Fields & Screenshots)
-**Implementation Method:** Claude Code CLI with bash_tool validation
-**Last Updated:** February 10, 2026
+## v4.0 Upgrade Checklist
 
-**Key Changes in v3.4:**
-- 5 new custom fields: Pod Name, Tmux Window, Kubectl Command, Worktree Path, Sub Agents Used
-- Project item ID tracking (from webhook, fallback to API, stored in SQLite)
-- Screenshot lifecycle: save to tmp, track in SQLite, cleanup on Done
-- Progress comments with active agents and task status
-- Enhanced start-planning.ts with field updates and comment posting
+### Phase 15: v4.0 Prerequisites
+- [ ] 15.1 Enable RabbitMQ plugins: `rabbitmq_mqtt`, `rabbitmq_web_mqtt`, `rabbitmq_management`
+- [ ] 15.2 Verify MQTT connectivity and topic routing from within cluster
+- [ ] 15.3 Deploy ntfy.sh to K3s cluster
+- [ ] 15.4 Add Cloudflare tunnel route for ntfy (`ntfy.bto.bar`)
+- [ ] 15.5 Create MinIO bucket `gwa-recordings` with lifecycle policies
+- [ ] 15.6 Verify `ansi-to-svg` works with Bun (or identify fallback)
+- [ ] 15.7 Create `src/shared/types.ts` with canonical enums and message schema
+
+### Phase 16: Security Hardening
+- [ ] 16.1 Import `timingSafeEqual` in `src/webhook/handler.ts`
+- [ ] 16.2 Change `verifySignature()` to fail closed when secret is empty
+- [ ] 16.3 Replace `===` with `timingSafeEqual` for HMAC comparison
+- [ ] 16.4 Add length check before `timingSafeEqual`
+- [ ] 16.5 Add in-memory deduplication `Map` with 1-hour TTL
+- [ ] 16.6 Check `X-GitHub-Delivery` against dedup map before processing
+- [ ] 16.7 Write tests for signature verification edge cases
+- [ ] 16.8 Write tests for deduplication logic
+- [ ] 16.9 Run `bun run typecheck` -- verify clean
+
+### Phase 17: XState State Machine (Pod Level)
+- [ ] 17.1 Install `xstate@^5.26.0`
+- [ ] 17.2 Create `src/lib/state-machine.ts` with machine definition
+- [ ] 17.3 Define all 7 states with transitions matching README
+- [ ] 17.4 Implement guards: `hasNoActiveSession`, `planExists`, `previousWas*`
+- [ ] 17.5 Implement `columnTransitionToEvent()` mapping function
+- [ ] 17.6 Add `xstate_snapshot` and `xstate_schema_version` columns to sessions table
+- [ ] 17.7 Implement `persistSnapshot()` and `restoreActor()` helper functions
+- [ ] 17.8 Handle `undefined` -> `null` in JSON serialization
+- [ ] 17.9 Integrate with AMQP command subscriber (replace workflow_dispatch chain)
+- [ ] 17.10 Update each transition handler to load/verify/persist XState state
+- [ ] 17.11 Map `blocked` state `previousState` context correctly
+- [ ] 17.12 Publish `state_change` event to RabbitMQ on every transition
+- [ ] 17.13 Write state machine unit tests (all valid transitions)
+- [ ] 17.14 Write state machine unit tests (all invalid transitions)
+- [ ] 17.15 Write state machine unit tests (guard conditions)
+- [ ] 17.16 Write snapshot round-trip tests
+- [ ] 17.17 Run `bun run typecheck` -- verify clean
+- [ ] 17.18 Run `bun test` -- verify all pass
+
+### Phase 18: Remove Redis (Complete -- 21 Files)
+- [ ] 18.1 Delete `src/lib/redis.ts`
+- [ ] 18.2 Rewrite `src/lib/repl-session.ts` -- migrate ALL 6 Redis operations to SQLite
+- [ ] 18.3 Extend `sessions` table with REPL-specific fields (`repl_session_id`, `repl_status`)
+- [ ] 18.4 Update `src/orchestrate.ts` -- replace all 8 Redis calls with SQLite
+- [ ] 18.5 Update `src/health-check.ts` -- remove Redis check, add SQLite check
+- [ ] 18.6 Delete `src/debug-redis.ts`, create `src/debug-db.ts`
+- [ ] 18.7 Remove `build:debug-redis` script from `package.json`
+- [ ] 18.8 Remove `IORedisInstrumentation` from `src/lib/telemetry.ts`
+- [ ] 18.9 Remove `Metrics.recordRedisOperation()` and all call sites
+- [ ] 18.10 Update `src/lib/types.ts` -- remove Redis types, use canonical `SessionState`
+- [ ] 18.11 Create `active_sessions` SQL view
+- [ ] 18.12 Remove `ioredis` from `package.json`
+- [ ] 18.13 Remove `@opentelemetry/instrumentation-ioredis` from `package.json`
+- [ ] 18.14 Update `src/tests/imports.test.ts` -- remove Redis export checks
+- [ ] 18.15 Update `src/tests/preflight.test.ts` -- remove `ioredis` assertion, add `xstate`/`amqplib`
+- [ ] 18.16 Update `tests/helm-chart.test.ts` -- remove Redis assertions, add RabbitMQ
+- [ ] 18.17 Update Helm `values.yaml` -- remove `redis` section, add `rabbitmq`, `ntfy`, `minio`
+- [ ] 18.18 Update Helm `configmap.yaml` -- replace `redis-cli` with `sqlite3` commands
+- [ ] 18.19 Update Helm `statefulset.yaml` -- remove `REDIS_HOST`/`REDIS_PORT`, add `RABBITMQ_URL`
+- [ ] 18.20 Update Helm `cronjob-cleanup.yaml` -- remove Redis env vars
+- [ ] 18.21 Update `k8s/gwa-runner-statefulset.yaml` -- remove Redis env vars
+- [ ] 18.22 Update `k8s/gwa-cleanup-cronjob.yaml` -- remove Redis env vars
+- [ ] 18.23 Verify `busy_timeout = 5000` on all `getDatabase()` calls
+- [ ] 18.24 Verify write transactions use `BEGIN IMMEDIATE`
+- [ ] 18.25 Add `SQLITE_BUSY` retry logic for critical paths
+- [ ] 18.26 Run `bun run typecheck` -- verify clean
+- [ ] 18.27 Run `bun test` -- verify all pass
+
+### Phase 19: RabbitMQ Backbone + Orchestrator Extraction
+- [ ] 19.1 Install `amqplib@^0.10.7` and `@types/amqplib`
+- [ ] 19.2 Create `src/lib/amqp.ts` -- singleton connection + auto-reconnect + publisher confirms
+- [ ] 19.3 Implement `publishEvent()` with routing key `gwa.events.{owner}.{repo}.{session}.{eventType}`
+- [ ] 19.4 Implement `subscribeCommands()` for `gwa.commands.{owner}.{repo}.#`
+- [ ] 19.5 Integrate with `logActivity()` in `src/lib/db.ts` (fire-and-forget)
+- [ ] 19.6 Publish heartbeat every 30s to `gwa.heartbeat.{owner}.{repo}`
+- [ ] 19.7 Create `src/orchestrator/` directory structure
+- [ ] 19.8 Move webhook handler logic to `src/orchestrator/webhook-handler.ts`
+- [ ] 19.9 Create `src/orchestrator/session-aggregator.ts` -- subscribe to all pod events
+- [ ] 19.10 Create `src/orchestrator/rest-api.ts` with Bun.serve
+- [ ] 19.11 Implement all REST endpoints (sessions, answer, snapshots, recordings)
+- [ ] 19.12 Create `src/orchestrator/push-bridge.ts` -- ntfy.sh integration
+- [ ] 19.13 Implement per-session debounce (30s) in push bridge
+- [ ] 19.14 Implement global rate limit (5 notifications/minute)
+- [ ] 19.15 Implement per-session cooldown (5 minutes)
+- [ ] 19.16 Create orchestrator's own SQLite database for aggregated state
+- [ ] 19.17 Create `Dockerfile.orchestrator` for orchestrator image
+- [ ] 19.18 Create K8s Deployment manifest for orchestrator
+- [ ] 19.19 Add `RABBITMQ_URL` env var to runner StatefulSet
+- [ ] 19.20 Add MQTT WebSocket Cloudflare tunnel route (WSS fallback)
+- [ ] 19.21 Configure Cloudflare Tunnel private network route for WARP path
+- [ ] 19.22 Configure Zero Trust Split Tunnels to include K3s service CIDR
+- [ ] 19.23 Enable `rabbitmq_mqtt` + `rabbitmq_web_mqtt` plugins
+- [ ] 19.24 Write AMQP publish/subscribe tests (mock broker)
+- [ ] 19.25 Write push bridge throttling tests
+- [ ] 19.26 Write orchestrator REST API tests
+- [ ] 19.27 Run `bun run typecheck` -- verify clean
+- [ ] 19.28 Run `bun test` -- verify all pass
+
+### Phase 20: Live Terminal Streaming & Snapshots
+- [ ] 20.1 Create `src/lib/terminal-relay.ts` -- main relay service module
+- [ ] 20.2 Implement `startPaneStream()` -- mkfifo + tmux pipe-pane + FIFO reader
+- [ ] 20.3 Implement `stopPaneStream()` -- detach pipe-pane + close FIFO + upload to MinIO
+- [ ] 20.4 Implement Bun WebSocket server with pub/sub topics per pane
+- [ ] 20.5 Implement mid-stream join -- `capture-pane -e -p` snapshot on WebSocket connect
+- [ ] 20.6 Implement asciicast v2 dual-write (NDJSON append alongside live stream)
+- [ ] 20.7 Add `terminal_snapshots` table to `schema.sql`
+- [ ] 20.8 Implement `takeSnapshot()` -- capture-pane + ansi-to-svg + SQLite store
+- [ ] 20.9 Integrate snapshot triggers with XState transition actions
+- [ ] 20.10 Install `ansi-to-svg` npm package (or fallback)
+- [ ] 20.11 Install `@aws-sdk/client-s3` for MinIO uploads
+- [ ] 20.12 Implement MinIO S3 upload on session completion
+- [ ] 20.13 Add presigned URL generation for recording playback
+- [ ] 20.14 Integrate `startPaneStream()` into session creation workflow
+- [ ] 20.15 Integrate `stopPaneStream()` into session cleanup workflow
+- [ ] 20.16 Add `build:terminal-relay` script to `package.json`
+- [ ] 20.17 Add Cloudflare tunnel route for terminal relay (`terminal.bto.bar` -> `:8080`)
+- [ ] 20.18 Add port 8080 to runner Service/StatefulSet
+- [ ] 20.19 Write tests: FIFO read + WebSocket publish round-trip
+- [ ] 20.20 Write tests: mid-stream join snapshot + incremental data
+- [ ] 20.21 Write tests: asciicast recording format validation
+- [ ] 20.22 Write tests: MinIO S3 upload
+- [ ] 20.23 Write tests: snapshot capture at lifecycle events
+- [ ] 20.24 Run `bun run typecheck` -- verify clean
+- [ ] 20.25 Run `bun test` -- verify all pass
+
+### Phase 21: Native Android App (Kotlin/Jetpack Compose)
+- [ ] 21.1 Create Android Studio project with Compose template (`bar.bto.gwa`)
+- [ ] 21.2 Add JitPack repo + Termux terminal-view/emulator dependencies
+- [ ] 21.3 Add Paho MQTT Android + OkHttp + Retrofit dependencies (NO Firebase)
+- [ ] 21.4 Create `TransportDetector` -- LAN probe -> WARP probe -> WSS fallback
+- [ ] 21.5 Create `MqttManager` -- native TCP primary, WSS fallback, auto-reconnect
+- [ ] 21.6 Create `MqttForegroundService` -- optional always-on background MQTT
+- [ ] 21.7 Create `TerminalRelayClient` -- OkHttp WebSocket to relay server
+- [ ] 21.8 Create `TerminalSessionBridge` -- pipe WebSocket bytes -> TerminalSession
+- [ ] 21.9 Build `TerminalScreen` -- Termux TerminalView in AndroidView (read-only, 200x50)
+- [ ] 21.10 Build `TerminalViewModel` -- manages WebSocket connection + mid-stream join
+- [ ] 21.11 Build `SessionListScreen` + ViewModel -- REST initial load + MQTT real-time updates
+- [ ] 21.12 Build `SessionDetailScreen` + ViewModel -- activity feed + state indicator
+- [ ] 21.13 Build `AnswerDialog` -- answer blocked session questions via REST
+- [ ] 21.14 Build `StateIndicator` -- color-coded XState state chip composable
+- [ ] 21.15 Build `SnapshotViewer` -- SVG/ANSI snapshot display
+- [ ] 21.16 Build `RecordingScreen` -- asciinema-player with presigned MinIO URLs
+- [ ] 21.17 Build `SettingsScreen` -- transport status, always-on toggle, ntfy config, battery guide
+- [ ] 21.18 Create `NtfyReceiver` -- subscribe to ntfy.sh topic for push notifications
+- [ ] 21.19 Create notification channels (action-required + completions) in Application.onCreate
+- [ ] 21.20 Handle notification deep links -- navigate to session/answer dialog
+- [ ] 21.21 Implement `AppLifecycleObserver` -- foreground sync (MQTT + REST safety net)
+- [ ] 21.22 Implement `BatteryOptimization` helper -- detect + prompt for whitelisting
+- [ ] 21.23 Add Compose navigation graph with deep link support
+- [ ] 21.24 Build signed APK
+- [ ] 21.25 Test on physical device -- LAN TCP path
+- [ ] 21.26 Test on physical device -- WARP TCP path
+- [ ] 21.27 Test on physical device -- WSS fallback
+- [ ] 21.28 Test live terminal -- 200 cols, truecolor, scrollback, cursor
+- [ ] 21.29 Test recording playback -- speed control, idle compression
+- [ ] 21.30 Test ntfy push -- only blocked/error/complete arrive
+- [ ] 21.31 Test notification throttling -- concurrent sessions don't flood
+- [ ] 21.32 Test foreground resume sync -- missed MQTT messages appear
+- [ ] 21.33 Test foreground service MQTT -- verify connection survives screen-off
+- [ ] 21.34 Test battery optimization whitelist prompt
+
+### Phase 22: Behavioral Test Suite
+- [ ] 22.1 Write full session lifecycle test (Todo -> Done)
+- [ ] 22.2 Write blocked -> resume lifecycle test
+- [ ] 22.3 Write RabbitMQ command -> pod XState transition test
+- [ ] 22.4 Write orchestrator aggregation test (events from multiple pods)
+- [ ] 22.5 Write concurrent session isolation test
+- [ ] 22.6 Write cleanup artifact verification test (tmux + worktree + DB + MinIO)
+- [ ] 22.7 Write terminal relay integration test (stream start -> data -> snapshot -> upload)
+- [ ] 22.8 Run full test suite -- verify all pass
+
+### Phase 23: v4.0 Documentation & Cleanup
+- [ ] 23.1 Update `README.md` -- architecture, tech stack, orchestrator, RabbitMQ
+- [ ] 23.2 Update `CLAUDE.md` -- remove Redis, add XState/amqplib/ntfy.sh/MinIO
+- [ ] 23.3 Update `CHANGELOG.md` with v4.0 changes
+- [ ] 23.4 Bump `package.json` version to 4.0.0
+- [ ] 23.5 Final `bun run typecheck` + `bun test`
+- [ ] 23.6 Build all binaries: `bun run build`
+- [ ] 23.7 Build and push runner Docker image
+- [ ] 23.8 Build and push orchestrator Docker image
+- [ ] 23.9 Deploy orchestrator to K3s
+- [ ] 23.10 Deploy updated runner to K3s
+- [ ] 23.11 End-to-end test: webhook -> RabbitMQ -> pod -> MQTT -> mobile + ntfy push
+
+---
+
+**Version:** 4.0 (XState, RabbitMQ, Live Terminal, Android App)
+**Implementation Method:** Claude Code CLI with bash_tool validation
+**Last Updated:** February 17, 2026
+
+**Key Changes in v4.0:**
+- XState state machine replacing ad-hoc state transitions
+- RabbitMQ backbone replacing Redis pub/sub and workflow_dispatch chain
+- Complete Redis removal (SQLite + RabbitMQ)
+- Orchestrator extraction (webhook handler + REST API + push bridge)
+- Live terminal streaming via tmux pipe-pane + WebSocket relay
+- Terminal snapshots (ansi-to-svg) and session recordings (asciicast v2 + MinIO)
+- Native Android app (Kotlin/Jetpack Compose) with MQTT, terminal view, ntfy push
+- Behavioral test suite for full lifecycle validation
+- Security hardening (timing-safe HMAC, webhook deduplication)
 
 **Previous:**
+- v3.4: Enhanced session fields, screenshot lifecycle
 - v3.3: Column transition trigger matrix, selective triggers
 - v3.2: Unified session lifecycle (one session per project item)
 - v3.1: Planning templates, plan-issue sync, agent orchestration
 - v3.0: GitHub Projects, Multi-Agent Swarm, Project Onboarding
-- v2.1: Crash recovery, dependency updates, Redis → SQLite migration
+- v2.1: Crash recovery, dependency updates, Redis -> SQLite migration
 
 **Next Review:** After first successful deployment

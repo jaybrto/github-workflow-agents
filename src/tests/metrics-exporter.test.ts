@@ -1,13 +1,74 @@
 /**
  * Unit tests for metrics-exporter module
  */
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
 import { existsSync, unlinkSync } from "fs";
 import { Database } from "bun:sqlite";
 
 // Test database path
 const TEST_DB_PATH = "/tmp/gwa-metrics-test.db";
 const SCHEMA_PATH = `${import.meta.dir}/../../schema.sql`;
+
+// ---------------------------------------------------------------------------
+// Re-mock db.js with real SQLite implementations.
+// amqp.test.ts uses mock.module("../lib/db.js") to stub everything with noops.
+// Bun's mock.module is process-wide, so we must override it here with a
+// functional implementation backed by the test database.
+// ---------------------------------------------------------------------------
+
+let _dbInstance: Database | null = null;
+
+function _getDatabase(): Database {
+  if (!_dbInstance) {
+    _dbInstance = new Database(process.env.DB_PATH || TEST_DB_PATH);
+    _dbInstance.exec("PRAGMA journal_mode=WAL");
+    _dbInstance.exec("PRAGMA busy_timeout=5000");
+    _dbInstance.exec("PRAGMA foreign_keys=ON");
+    _dbInstance.exec("PRAGMA synchronous=NORMAL");
+  }
+  return _dbInstance;
+}
+
+function _closeDatabase(): void {
+  if (_dbInstance) {
+    _dbInstance.close();
+    _dbInstance = null;
+  }
+}
+
+function _getConfig(key: string): string | null {
+  const db = _getDatabase();
+  const result = db.query("SELECT value FROM config WHERE key = ?").get(key) as { value: string } | null;
+  return result?.value || null;
+}
+
+function _setConfig(key: string, value: string): void {
+  const db = _getDatabase();
+  db.run("INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, unixepoch())", [key, value]);
+}
+
+mock.module("../lib/db.js", () => ({
+  getDatabase: _getDatabase,
+  closeDatabase: _closeDatabase,
+  getConfig: _getConfig,
+  setConfig: _setConfig,
+  createConnection: _getDatabase,
+  initDatabase: _getDatabase,
+  withRetry: (fn: () => unknown) => fn(),
+  logActivity: () => {},
+  getSession: () => null,
+  getSessionByPR: () => null,
+  createSession: () => {},
+  updateSessionStatus: () => {},
+  touchSession: () => {},
+  createQuestion: () => 0,
+  updateQuestionPosted: () => {},
+  answerQuestion: () => {},
+  getPendingQuestion: () => null,
+  getQuestionByPR: () => null,
+  cleanupOldSessions: () => 0,
+  getActiveSessionCount: () => 0,
+}));
 
 describe("Metrics Exporter", () => {
   let db: Database;
@@ -17,24 +78,31 @@ describe("Metrics Exporter", () => {
     process.env.DB_PATH = TEST_DB_PATH;
     process.env.DISABLE_METRICS_EXPORT = "true"; // Disable auto-start during tests
 
+    // Reset singleton so it picks up the new DB_PATH
+    _closeDatabase();
+
     // Remove test database if exists
     if (existsSync(TEST_DB_PATH)) {
       unlinkSync(TEST_DB_PATH);
     }
 
-    // Create fresh database
+    // Create fresh database and load schema
     db = new Database(TEST_DB_PATH);
 
-    // Load schema
     if (existsSync(SCHEMA_PATH)) {
       const schema = await Bun.file(SCHEMA_PATH).text();
       db.exec(schema);
     } else {
       throw new Error(`Schema file not found: ${SCHEMA_PATH}`);
     }
+
+    // Force-initialize the mock singleton so it points to this same file.
+    // This ensures metrics-exporter's getDatabase() returns a valid connection.
+    _getDatabase();
   });
 
   afterAll(() => {
+    _closeDatabase();
     db.close();
     if (existsSync(TEST_DB_PATH)) {
       unlinkSync(TEST_DB_PATH);
@@ -67,7 +135,7 @@ describe("Metrics Exporter", () => {
     const { exportDatabaseMetrics } = await import("../lib/metrics-exporter.js");
 
     // Should not throw on empty database
-    await expect(exportDatabaseMetrics()).resolves.not.toThrow();
+    await exportDatabaseMetrics();
   });
 
   test("exportDatabaseMetrics processes completed sessions", async () => {
@@ -82,7 +150,7 @@ describe("Metrics Exporter", () => {
     const { exportDatabaseMetrics } = await import("../lib/metrics-exporter.js");
 
     // Should process the session without errors
-    await expect(exportDatabaseMetrics()).resolves.not.toThrow();
+    await exportDatabaseMetrics();
 
     // Verify last export timestamp was updated
     const lastExport = db.query("SELECT value FROM config WHERE key = ?").get("metrics_last_export") as
@@ -93,8 +161,14 @@ describe("Metrics Exporter", () => {
   });
 
   test("exportDatabaseMetrics processes tool calls", async () => {
-    // Insert test tool calls
+    // Insert parent session first (FK constraint)
     const now = Math.floor(Date.now() / 1000);
+    db.run(
+      `INSERT INTO sessions (id, type, status, github_number, github_type, repo)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ["pr-123", "feature", "running", 123, "pull_request", "test/repo"]
+    );
+    // Insert test tool calls
     db.run(
       `INSERT INTO tool_calls (session_id, tool_name, success, called_at)
        VALUES (?, ?, ?, ?)`,
@@ -109,7 +183,7 @@ describe("Metrics Exporter", () => {
     const { exportDatabaseMetrics } = await import("../lib/metrics-exporter.js");
 
     // Should process tool calls without errors
-    await expect(exportDatabaseMetrics()).resolves.not.toThrow();
+    await exportDatabaseMetrics();
   });
 
   test("exportDatabaseMetrics processes commits", async () => {
@@ -129,7 +203,7 @@ describe("Metrics Exporter", () => {
     const { exportDatabaseMetrics } = await import("../lib/metrics-exporter.js");
 
     // Should process commits without errors
-    await expect(exportDatabaseMetrics()).resolves.not.toThrow();
+    await exportDatabaseMetrics();
   });
 
   test("exportDatabaseMetrics processes questions answered", async () => {
@@ -149,12 +223,18 @@ describe("Metrics Exporter", () => {
     const { exportDatabaseMetrics } = await import("../lib/metrics-exporter.js");
 
     // Should process questions without errors
-    await expect(exportDatabaseMetrics()).resolves.not.toThrow();
+    await exportDatabaseMetrics();
   });
 
   test("exportDatabaseMetrics processes agent tasks", async () => {
-    // Insert test agent task
+    // Insert parent session first (FK constraint)
     const now = Math.floor(Date.now() / 1000);
+    db.run(
+      `INSERT INTO sessions (id, type, status, github_number, github_type, repo)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ["pr-123", "feature", "running", 123, "pull_request", "test/repo"]
+    );
+    // Insert test agent task
     db.run(
       `INSERT INTO agent_tasks (id, session_id, agent_type, task_id, name, status, completed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -164,7 +244,7 @@ describe("Metrics Exporter", () => {
     const { exportDatabaseMetrics } = await import("../lib/metrics-exporter.js");
 
     // Should process agent tasks without errors
-    await expect(exportDatabaseMetrics()).resolves.not.toThrow();
+    await exportDatabaseMetrics();
   });
 
   test("exportDatabaseMetrics handles batch processing", async () => {
@@ -176,13 +256,13 @@ describe("Metrics Exporter", () => {
     );
 
     for (let i = 0; i < 150; i++) {
-      stmt.run([`pr-${i}`, "feature", "complete", i, "pull_request", "test/repo", now - 300, now]);
+      stmt.run(`pr-${i}`, "feature", "complete", i, "pull_request", "test/repo", now - 300, now);
     }
 
     const { exportDatabaseMetrics } = await import("../lib/metrics-exporter.js");
 
     // Should handle large batch without errors
-    await expect(exportDatabaseMetrics()).resolves.not.toThrow();
+    await exportDatabaseMetrics();
   });
 
   test("exportDatabaseMetrics only processes new records", async () => {
@@ -200,7 +280,7 @@ describe("Metrics Exporter", () => {
     const { exportDatabaseMetrics } = await import("../lib/metrics-exporter.js");
 
     // Should process without errors (old record should be skipped)
-    await expect(exportDatabaseMetrics()).resolves.not.toThrow();
+    await exportDatabaseMetrics();
   });
 
   test("startMetricsExporter can be called multiple times", async () => {

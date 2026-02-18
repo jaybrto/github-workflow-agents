@@ -23,13 +23,11 @@ import {
   type Meter,
 } from "@opentelemetry/api";
 
-// Auto-instrumentation for libraries
-// NOTE: Only ioredis works with Bun. HTTP/fetch instrumentation doesn't work because:
+// NOTE: HTTP/fetch auto-instrumentation doesn't work with Bun because:
 // - @opentelemetry/instrumentation-http: Patches Node's http module (Bun doesn't use it)
 // - @opentelemetry/instrumentation-fetch: Browser only
 // - @opentelemetry/instrumentation-undici: Node's undici (Bun has native fetch)
 // For HTTP clients (octokit, k8s), use manual withSpan() wrappers in those modules.
-import { IORedisInstrumentation } from "@opentelemetry/instrumentation-ioredis";
 
 // Service identity from env vars
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || "github-workflow-agents";
@@ -71,15 +69,7 @@ const sdk = new NodeSDK({
     exportIntervalMillis: 5000, // Fast export for short-lived CLI
   }),
   logRecordProcessors: [logRecordProcessor],
-  // Auto-instrumentation (only ioredis works with Bun)
-  instrumentations: [
-    new IORedisInstrumentation({
-      dbStatementSerializer: (cmdName, cmdArgs) => {
-        // Include command name and key (first arg) but not values for security
-        return cmdArgs.length > 0 ? `${cmdName} ${cmdArgs[0]}` : cmdName;
-      },
-    }),
-  ],
+  instrumentations: [],
 });
 
 // Start SDK - this initializes tracing, metrics, and logs providers
@@ -119,11 +109,6 @@ const claudeInvocationCounter = meter.createCounter("gwa_claude_invocations_tota
 
 const githubApiCallCounter = meter.createCounter("gwa_github_api_calls_total", {
   description: "Total GitHub API calls",
-  unit: "1",
-});
-
-const redisOperationCounter = meter.createCounter("gwa_redis_operations_total", {
-  description: "Total Redis operations",
   unit: "1",
 });
 
@@ -346,11 +331,6 @@ export const Metrics = {
   // GitHub API
   recordGitHubApiCall(operation: string, success: boolean) {
     githubApiCallCounter.add(1, { operation, success: success.toString() });
-  },
-
-  // Redis
-  recordRedisOperation(operation: string, success: boolean) {
-    redisOperationCounter.add(1, { operation, success: success.toString() });
   },
 
   // SQLite Database

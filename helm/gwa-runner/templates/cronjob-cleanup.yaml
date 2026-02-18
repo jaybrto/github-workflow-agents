@@ -36,10 +36,6 @@ spec:
                 - "--pod"
                 - {{ include "gwa.podName" . | quote }}
               env:
-                - name: REDIS_HOST
-                  value: {{ .Values.redis.host | quote }}
-                - name: REDIS_PORT
-                  value: {{ .Values.redis.port | quote }}
                 - name: GITHUB_TOKEN
                   valueFrom:
                     secretKeyRef:

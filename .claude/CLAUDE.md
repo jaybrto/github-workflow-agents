@@ -6,7 +6,7 @@ Automated Claude Code integration for GitHub PRs with persistent sessions.
 
 - **Purpose:** Production Claude Code automation with long-lived K3s pods
 - **Tech Stack:** Bun, TypeScript (NO Python)
-- **Infrastructure:** K3s cluster with Longhorn storage, Redis, PostgreSQL HA
+- **Infrastructure:** K3s cluster with Longhorn storage, RabbitMQ, MinIO
 - **Organization:** jaybrto
 
 ## Repository Structure
@@ -21,11 +21,16 @@ Automated Claude Code integration for GitHub PRs with persistent sessions.
 │   ├── orchestrate.ts    # Main PR work lifecycle
 │   ├── respond.ts        # Handle @claude-answer responses
 │   ├── cleanup.ts        # Stale PR cleanup
+│   ├── shared/           # Canonical shared types (SessionState, AmqpMessage, etc.)
+│   ├── orchestrator/     # Orchestrator service (REST API, push bridge, aggregator)
 │   └── lib/              # Shared libraries
 │       ├── claude.ts     # Claude Code subprocess
 │       ├── tmux.ts       # node-tmux wrapper
-│       ├── redis.ts      # ioredis client
+│       ├── amqp.ts       # RabbitMQ AMQP client
+│       ├── state-machine.ts # XState v5 session lifecycle
+│       ├── terminal-relay.ts # WebSocket streaming, snapshots, recordings
 │       ├── github.ts     # @octokit/rest client
+│       ├── db.ts         # SQLite database (WAL mode)
 │       └── k8s.ts        # @kubernetes/client-node
 ├── Dockerfile            # Multi-stage Bun build
 └── package.json          # Dependencies
@@ -41,7 +46,10 @@ All external interactions use proper SDKs — no CLI output parsing:
 | Tmux        | `node-tmux`               | Session/window management   |
 | Kubernetes  | `@kubernetes/client-node` | Pod exec, status            |
 | GitHub      | `@octokit/rest`           | PRs, comments, status       |
-| Redis       | `ioredis`                 | PR→session tracking         |
+| XState      | `xstate`                  | State machine lifecycle     |
+| AMQP        | `amqplib`                 | RabbitMQ messaging          |
+| ntfy.sh     | HTTP POST (fetch)         | Push notifications          |
+| MinIO       | `@aws-sdk/client-s3`      | Recording storage           |
 
 ## Git Workflow
 
@@ -78,8 +86,26 @@ If you need clarification:
 ### Session Persistence
 
 - Session data persists on Longhorn across pod restarts
-- Redis tracks PR→tmux window mappings (7-day TTL)
+- SQLite stores all session state, XState snapshots, and activity logs
+- RabbitMQ distributes events between runner pods and the orchestrator
 - Use `--continue` flag to resume previous conversations
+
+### Orchestrator Service
+
+The orchestrator (`src/orchestrator/`) runs as a separate service:
+
+- **Webhook Handler**: Receives GitHub webhooks, verifies HMAC signatures (timing-safe), deduplicates deliveries, publishes AMQP commands
+- **Session Aggregator**: Subscribes to `gwa.events.#`, maintains cross-pod session state in its own SQLite DB
+- **Push Bridge**: Subscribes to events, sends ntfy.sh notifications for blocked/error/complete with rate limiting
+- **REST API**: Exposes `/sessions`, `/sessions/:id/answer`, `/sessions/:id/snapshots`, `/sessions/:id/recordings`
+
+### Terminal Streaming
+
+The terminal relay (`src/lib/terminal-relay.ts`) provides:
+
+- **WebSocket server** on port 8080 at `/ws/{sessionId}` for live terminal output
+- **Asciicast v2 recordings** uploaded to MinIO on session completion
+- **SVG snapshots** via ansi-to-svg stored in SQLite
 
 ---
 
@@ -224,9 +250,9 @@ User: "What calls postPRComment"
 WRONG: Grep "postPRComment"
 RIGHT: LSP incomingCalls on src/lib/github.ts line 81
 
-User: "Find definition of RedisSession"
-WRONG: Grep "interface RedisSession"
-RIGHT: LSP goToDefinition on any usage of RedisSession
+User: "Find definition of SessionState"
+WRONG: Grep "enum SessionState"
+RIGHT: LSP goToDefinition on any usage of SessionState
 ```
 
 ### LSP Limitations

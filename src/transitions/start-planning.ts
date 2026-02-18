@@ -18,6 +18,9 @@ import {
   ensureCustomFields,
 } from "../lib/projects.js";
 import { generateComment } from "../lib/comment-generator.js";
+import { createSessionActor, persistSnapshot, getStateName } from "../lib/state-machine.js";
+import { startPaneStream } from "../lib/terminal-relay.js";
+import { SessionState } from "../shared/types.js";
 
 const WORKTREES_PATH = "/home/runner/worktrees";
 const REPO_PATH = "/home/runner/repo";
@@ -250,11 +253,32 @@ Use /handoff if you need to pause and resume later.`;
 
   db.logActivity(sessionId, "planning_started", { issue: issueNumber }, "workflow");
 
+  // Initialize XState actor and transition idle -> planning
+  const actor = createSessionActor({
+    sessionId,
+    previousState: null,
+    issueNumber,
+    repoOwner: owner,
+    repoName,
+  });
+  actor.send({ type: "START_PLANNING" });
+  persistSnapshot(sessionId, actor.getSnapshot());
+  log("debug", `XState transitioned to ${getStateName(actor)}`);
+
   // 8. Create tmux window
   const windowNum = await tmux.createWindow(sessionId, worktreePath);
 
   // Update session with window number
   db.updateSessionStatus(sessionId, "running", { tmux_window: windowNum });
+
+  // Start terminal streaming
+  const tmuxTarget = `gwa-work:${windowNum}`;
+  try {
+    await startPaneStream(sessionId, tmuxTarget);
+    log("info", "Terminal streaming started", { sessionId, tmuxTarget });
+  } catch (error) {
+    log("warn", "Failed to start terminal streaming", { error: String(error) });
+  }
 
   // Build kubectl attach command
   const kubectlCommand = `kubectl exec -it ${podName} -- tmux attach -t gwa-work:${windowNum}`;

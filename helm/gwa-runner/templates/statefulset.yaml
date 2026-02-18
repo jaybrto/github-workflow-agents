@@ -52,10 +52,6 @@ spec:
             # Application config
             - name: REPO
               value: {{ include "gwa.fullRepo" . | quote }}
-            - name: REDIS_HOST
-              value: {{ .Values.redis.host | quote }}
-            - name: REDIS_PORT
-              value: {{ .Values.redis.port | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:

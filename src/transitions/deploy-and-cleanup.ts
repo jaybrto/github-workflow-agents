@@ -13,6 +13,8 @@ import { getOctokit } from "../lib/github.js";
 import * as tmux from "../lib/tmux.js";
 import * as db from "../lib/db.js";
 import { getSessionScreenshots } from "../lib/screenshot.js";
+import { stopPaneStream } from "../lib/terminal-relay.js";
+import { restoreActor, persistSnapshot, getStateName, canTransition } from "../lib/state-machine.js";
 
 const WORKTREES_PATH = "/home/runner/worktrees";
 const REPO_PATH = "/home/runner/repo";
@@ -177,6 +179,19 @@ async function deployAndCleanup(issueNumber: number, repo: string): Promise<void
     }
   }
 
+  // 3.5 Transition XState: review -> done
+  const actor = restoreActor(sessionId);
+  if (actor) {
+    const event = { type: "DEPLOY_AND_CLEANUP" as const };
+    if (!canTransition(actor, event)) {
+      log("warn", `XState cannot DEPLOY_AND_CLEANUP from ${getStateName(actor)}, proceeding anyway`);
+    } else {
+      actor.send(event);
+      persistSnapshot(sessionId, actor.getSnapshot());
+      log("debug", `XState transitioned to ${getStateName(actor)}`);
+    }
+  }
+
   // 4. Update session status to complete
   log("info", "Marking session as complete");
 
@@ -190,6 +205,12 @@ async function deployAndCleanup(issueNumber: number, repo: string): Promise<void
     pr_number: prNumber,
     merged: true,
   }, "workflow");
+
+  // 4.5. Stop terminal streaming and upload recording
+  const recording = await stopPaneStream(sessionId);
+  if (recording) {
+    log("info", "Recording uploaded", { s3Key: recording.s3Key, sizeBytes: recording.sizeBytes });
+  }
 
   // 5. Kill tmux window if exists
   if (windowNum) {

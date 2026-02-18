@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 import { parseArgs } from "util";
-import * as redis from "./lib/redis.js";
+import * as db from "./lib/db.js";
 import * as tmux from "./lib/tmux.js";
 
 interface HealthStatus {
   healthy: boolean;
   timestamp: string;
   checks: {
-    redis: { ok: boolean; latencyMs?: number; error?: string };
+    sqlite: { ok: boolean; integrityOk?: boolean; activeSessions?: number; error?: string };
     tmux: { ok: boolean; sessionExists: boolean; windowCount?: number; error?: string };
     worktrees: { ok: boolean; count?: number; error?: string };
   };
@@ -30,7 +30,7 @@ async function main() {
     printStatus(status);
   }
 
-  await redis.closeRedis();
+  db.closeDatabase();
   process.exit(status.healthy ? 0 : 1);
 }
 
@@ -39,27 +39,34 @@ async function runHealthChecks(): Promise<HealthStatus> {
     healthy: true,
     timestamp: new Date().toISOString(),
     checks: {
-      redis: { ok: false },
+      sqlite: { ok: false },
       tmux: { ok: false, sessionExists: false },
       worktrees: { ok: false },
     },
   };
 
-  // Check Redis
+  // Check SQLite
   try {
-    const start = performance.now();
-    const client = redis.getRedisClient();
-    const pong = await client.ping();
-    const latencyMs = Math.round(performance.now() - start);
+    const database = db.getDatabase();
+    const integrityResult = database
+      .query("PRAGMA integrity_check")
+      .get() as { integrity_check: string } | null;
 
-    if (pong === "PONG") {
-      status.checks.redis = { ok: true, latencyMs };
+    const integrityOk = integrityResult?.integrity_check === "ok";
+    const activeSessions = db.getActiveSessionCount();
+
+    if (integrityOk) {
+      status.checks.sqlite = { ok: true, integrityOk, activeSessions };
     } else {
-      status.checks.redis = { ok: false, error: `Unexpected response: ${pong}` };
+      status.checks.sqlite = {
+        ok: false,
+        integrityOk: false,
+        error: `Integrity check failed: ${integrityResult?.integrity_check}`,
+      };
       status.healthy = false;
     }
   } catch (error) {
-    status.checks.redis = {
+    status.checks.sqlite = {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     };
@@ -118,13 +125,14 @@ function printStatus(status: HealthStatus): void {
   console.log(`Timestamp: ${status.timestamp}`);
   console.log(`Overall: ${status.healthy ? "HEALTHY" : "UNHEALTHY"}\n`);
 
-  console.log("--- Redis ---");
-  if (status.checks.redis.ok) {
+  console.log("--- SQLite ---");
+  if (status.checks.sqlite.ok) {
     console.log(`  Status: OK`);
-    console.log(`  Latency: ${status.checks.redis.latencyMs}ms`);
+    console.log(`  Integrity: ${status.checks.sqlite.integrityOk ? "OK" : "FAILED"}`);
+    console.log(`  Active Sessions: ${status.checks.sqlite.activeSessions}`);
   } else {
     console.log(`  Status: FAILED`);
-    console.log(`  Error: ${status.checks.redis.error}`);
+    console.log(`  Error: ${status.checks.sqlite.error}`);
   }
 
   console.log("\n--- Tmux ---");

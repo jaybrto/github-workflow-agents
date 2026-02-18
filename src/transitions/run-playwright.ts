@@ -10,6 +10,7 @@ import { existsSync } from "fs";
 import { withSpan, shutdown as shutdownTelemetry, log } from "../lib/telemetry.js";
 import { postPRComment } from "../lib/github.js";
 import * as db from "../lib/db.js";
+import { restoreActor, persistSnapshot, getStateName, canTransition } from "../lib/state-machine.js";
 
 const WORKTREES_PATH = "/home/runner/worktrees";
 
@@ -107,6 +108,20 @@ async function runPlaywrightTests(issueNumber: number, repo: string): Promise<Te
 
   // 2. Initialize database and log QA start
   db.initDatabase();
+
+  // Transition XState: inProgress -> qa
+  const actor = restoreActor(sessionId);
+  if (actor) {
+    const event = { type: "RUN_TESTS" as const };
+    if (!canTransition(actor, event)) {
+      log("warn", `XState cannot RUN_TESTS from ${getStateName(actor)}, proceeding anyway`);
+    } else {
+      actor.send(event);
+      persistSnapshot(sessionId, actor.getSnapshot());
+      log("debug", `XState transitioned to ${getStateName(actor)}`);
+    }
+  }
+
   db.logActivity(sessionId, "qa_started", { run_id: runId }, "playwright");
   db.updateSessionStatus(sessionId, "running");
 

@@ -9,6 +9,7 @@ import { parseArgs } from "util";
 import { withSpan, shutdown as shutdownTelemetry, log } from "../lib/telemetry.js";
 import * as tmux from "../lib/tmux.js";
 import * as db from "../lib/db.js";
+import { restoreActor, persistSnapshot, getStateName, canTransition } from "../lib/state-machine.js";
 
 interface SendAnswerArgs {
   issue: number;
@@ -106,7 +107,20 @@ async function sendAnswer(issueNumber: number, answer: string): Promise<void> {
     db.answerQuestion(questionId, answer, "human");
   }
 
-  // 6. Update session status
+  // 6. Transition XState: blocked -> previous state
+  const actor = restoreActor(sessionId);
+  if (actor) {
+    const event = { type: "SEND_ANSWER" as const };
+    if (!canTransition(actor, event)) {
+      log("warn", `XState cannot SEND_ANSWER from ${getStateName(actor)}, proceeding anyway`);
+    } else {
+      actor.send(event);
+      persistSnapshot(sessionId, actor.getSnapshot());
+      log("debug", `XState transitioned to ${getStateName(actor)}`);
+    }
+  }
+
+  // 7. Update session status
   db.updateSessionStatus(sessionId, "running");
   db.logActivity(sessionId, "question_answered", {
     question_id: questionId,

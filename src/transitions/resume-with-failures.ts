@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "fs";
 import { withSpan, shutdown as shutdownTelemetry, log } from "../lib/telemetry.js";
 import * as tmux from "../lib/tmux.js";
 import * as db from "../lib/db.js";
+import { restoreActor, persistSnapshot, getStateName, canTransition } from "../lib/state-machine.js";
 
 const WORKTREES_PATH = "/home/runner/worktrees";
 
@@ -181,7 +182,20 @@ ${failureDetails || "No detailed failure info available. Check playwright-report
 
 Focus on fixing the failures, not adding new features.`;
 
-  // 6. Update session status
+  // 6. Transition XState: qa -> inProgress
+  const xstateActor = restoreActor(sessionId);
+  if (xstateActor) {
+    const event = { type: "RESUME_WITH_FAILURES" as const };
+    if (!canTransition(xstateActor, event)) {
+      log("warn", `XState cannot RESUME_WITH_FAILURES from ${getStateName(xstateActor)}, proceeding anyway`);
+    } else {
+      xstateActor.send(event);
+      persistSnapshot(sessionId, xstateActor.getSnapshot());
+      log("debug", `XState transitioned to ${getStateName(xstateActor)}`);
+    }
+  }
+
+  // 7. Update session status
   db.updateSessionStatus(sessionId, "running");
   db.logActivity(sessionId, "qa_fix_started", {
     run_id: runId,

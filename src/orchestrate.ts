@@ -4,7 +4,7 @@ import { withSpan, Metrics, shutdown as shutdownTelemetry, log } from "./lib/tel
 
 import { parseArgs } from "util";
 import type { OrchestrateArgs, PRContext } from "./lib/types.js";
-import * as redis from "./lib/redis.js";
+import * as db from "./lib/db.js";
 import * as github from "./lib/github.js";
 import * as tmux from "./lib/tmux.js";
 import * as git from "./lib/git.js";
@@ -14,6 +14,7 @@ import { startREPL } from "./lib/repl-session.js";
 import { analyzeTaskComplexity } from "./lib/task-analyzer.js";
 import { generateComment } from "./lib/comment-generator.js";
 import { startMetricsExporter } from "./lib/metrics-exporter.js";
+import { randomUUID } from "crypto";
 
 async function main() {
   const { values } = parseArgs({
@@ -88,6 +89,9 @@ async function main() {
     repoName,
   };
 
+  // Initialize database
+  db.initDatabase();
+
   // Start background metrics exporter (safe to call multiple times)
   startMetricsExporter();
 
@@ -148,7 +152,7 @@ async function main() {
     Metrics.recordOrchestration(ctx.repo, ctx.pr, ctx.trigger, success);
     Metrics.recordOrchestrationDuration(Date.now() - startTime, ctx.repo, ctx.trigger);
 
-    await redis.closeRedis();
+    db.closeDatabase();
     await shutdownTelemetry();
   }
 
@@ -269,10 +273,10 @@ async function orchestrate(ctx: PRContext): Promise<void> {
     span.setAttribute("worktree.path", worktreePath);
   });
 
-  // 5. Get or create session in Redis
-  let session = await withSpan("redis.getSession", async () => {
-    const s = await redis.getSession(ctx.repo, ctx.pr);
-    Metrics.recordRedisOperation("getSession", true);
+  // 5. Get or create session in SQLite
+  let session = await withSpan("db.getSessionByPR", async () => {
+    const s = db.getSessionByPR(ctx.repo, ctx.pr);
+    Metrics.recordDbOperation("getSessionByPR", true);
     return s;
   });
 
@@ -296,7 +300,7 @@ async function executeREPLMode(
   ctx: PRContext,
   worktreePath: string,
   prompt: string,
-  existingSession: Awaited<ReturnType<typeof redis.getSession>>
+  existingSession: db.Session | null
 ): Promise<void> {
   await withSpan(
     "repl.execute",
@@ -308,7 +312,9 @@ async function executeREPLMode(
         workingDir: worktreePath,
       });
 
-      await redis.updateSessionStatus(ctx.repo, ctx.pr, "active");
+      if (existingSession) {
+        db.updateSessionStatus(existingSession.id, "running");
+      }
 
       // Start the REPL session
       const replResult = await startREPL(worktreePath, prompt);
@@ -316,21 +322,26 @@ async function executeREPLMode(
       span.setAttribute("repl.session_id", replResult.session.sessionId);
       span.setAttribute("repl.tmux_window", replResult.session.tmuxWindow);
 
-      // Update Redis session with REPL info
+      // Update or create SQLite session
       if (!existingSession) {
-        await withSpan("redis.createSession", async () => {
-          await redis.createSession(ctx.repo, ctx.pr, {
-            tmuxWindow: replResult.session.tmuxWindow,
-            podName: process.env.POD_NAME || "gwa-runner-0",
-            worktreePath,
-            createdAt: Date.now(),
-            status: "active",
+        await withSpan("db.createSession", async () => {
+          const sessionId = `pr-${ctx.pr}`;
+          db.createSession({
+            id: sessionId,
+            type: "pr",
+            github_number: ctx.pr,
+            github_type: "pull_request",
+            repo: ctx.repo,
+            branch: ctx.branch,
+            tmux_window: replResult.session.tmuxWindow,
+            worktree_path: worktreePath,
+            initial_prompt: prompt.substring(0, 500),
           });
-          Metrics.recordRedisOperation("createSession", true);
+          Metrics.recordDbOperation("createSession", true);
           Metrics.sessionStarted();
         });
       } else {
-        await redis.touchSession(ctx.repo, ctx.pr);
+        db.touchSession(existingSession.id);
       }
 
       // Generate and post REPL start comment
@@ -366,35 +377,42 @@ async function executeHeadlessMode(
   ctx: PRContext,
   worktreePath: string,
   prompt: string,
-  existingSession: Awaited<ReturnType<typeof redis.getSession>>
+  existingSession: db.Session | null
 ): Promise<void> {
   // Create tmux window for headless mode
   let tmuxWindow: number;
+  let sessionId: string;
 
   if (existingSession) {
-    log("debug", `Found existing session in window ${existingSession.tmuxWindow}`);
-    tmuxWindow = existingSession.tmuxWindow;
-    await redis.touchSession(ctx.repo, ctx.pr);
+    log("debug", `Found existing session ${existingSession.id} in window ${existingSession.tmux_window}`);
+    sessionId = existingSession.id;
+    tmuxWindow = existingSession.tmux_window!;
+    db.touchSession(sessionId);
 
     // Verify window still exists
-    if (!(await tmux.windowExists(tmuxWindow))) {
+    if (tmuxWindow === null || !(await tmux.windowExists(tmuxWindow))) {
       log("debug", "Window gone, recreating");
       tmuxWindow = await tmux.createWindow(`pr-${ctx.pr}`, worktreePath);
-      await redis.updateSessionStatus(ctx.repo, ctx.pr, "active");
+      db.updateSessionStatus(sessionId, "running", { tmux_window: tmuxWindow });
     }
   } else {
     log("debug", "Creating new session");
     tmuxWindow = await tmux.createWindow(`pr-${ctx.pr}`, worktreePath);
+    sessionId = `pr-${ctx.pr}`;
 
-    await withSpan("redis.createSession", async () => {
-      await redis.createSession(ctx.repo, ctx.pr, {
-        tmuxWindow,
-        podName: process.env.POD_NAME || "gwa-runner-0",
-        worktreePath,
-        createdAt: Date.now(),
-        status: "active",
+    await withSpan("db.createSession", async () => {
+      db.createSession({
+        id: sessionId,
+        type: "pr",
+        github_number: ctx.pr,
+        github_type: "pull_request",
+        repo: ctx.repo,
+        branch: ctx.branch,
+        tmux_window: tmuxWindow,
+        worktree_path: worktreePath,
+        initial_prompt: prompt.substring(0, 500),
       });
-      Metrics.recordRedisOperation("createSession", true);
+      Metrics.recordDbOperation("createSession", true);
       Metrics.sessionStarted();
     });
   }
@@ -410,7 +428,7 @@ async function executeHeadlessMode(
         workingDir: worktreePath,
       });
 
-      await redis.updateSessionStatus(ctx.repo, ctx.pr, "active");
+      db.updateSessionStatus(sessionId, "running");
 
       const claudeStartTime = Date.now();
       const result = await claude.runClaude({
@@ -440,8 +458,12 @@ async function executeHeadlessMode(
       // Handle result
       if (result.askedQuestion) {
         log("info", "Claude asked a question", { pr: ctx.pr });
-        await redis.updateSessionStatus(ctx.repo, ctx.pr, "waiting");
-        await redis.storeQuestion(ctx.repo, ctx.pr, result.askedQuestion);
+        db.updateSessionStatus(sessionId, "blocked");
+        db.createQuestion({
+          session_id: sessionId,
+          question: result.askedQuestion,
+          question_context: result.output.slice(-500),
+        });
         await github.postQuestion(
           ctx.owner,
           ctx.repoName,
@@ -452,7 +474,7 @@ async function executeHeadlessMode(
         Metrics.recordGitHubApiCall("postQuestion", true);
       } else if (result.success) {
         log("info", "Claude completed successfully", { pr: ctx.pr });
-        await redis.updateSessionStatus(ctx.repo, ctx.pr, "completed");
+        db.updateSessionStatus(sessionId, "complete");
 
         // Use smart comment generator for completion
         const comment = await generateComment({
@@ -475,7 +497,9 @@ async function executeHeadlessMode(
           pr: ctx.pr,
           error: result.error || "Unknown error",
         });
-        await redis.updateSessionStatus(ctx.repo, ctx.pr, "error");
+        db.updateSessionStatus(sessionId, "error", {
+          error_message: (result.error || "Unknown error").substring(0, 1000),
+        });
 
         // Check if this is an auth failure
         const isAuthFailure = claude.detectAuthFailure(

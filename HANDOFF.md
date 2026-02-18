@@ -1,15 +1,10 @@
-# Handoff: Complete GWA End-to-End Integration
+# Handoff: GWA v4.0 — Complete Architecture
 
 ## Overview
 
-**Version:** 3.4 (February 10, 2026)
+**Version:** 4.0.0 (February 17, 2026)
 
-The GitHub Workflow Agents (GWA) webhook and state machine are fully functional. This session needs to:
-1. ~~Build and deploy the missing `gwa-*` binaries to the K8s pod~~ ✅ DONE
-2. Set up SQLite database for session persistence (NOT Redis - we use SQLite now)
-3. Test the full end-to-end flow with actual REPL sessions
-4. Verify all 17 handlers work with real Claude Code sessions
-5. **NEW (v3.4):** Add enhanced session fields and screenshot tracking
+GitHub Workflow Agents (GWA) v4.0 is a complete architectural overhaul. The system now uses XState v5 for state management, RabbitMQ for event distribution, and a dedicated orchestrator service for cross-pod coordination. Redis has been fully removed.
 
 ## Current State
 
@@ -17,209 +12,164 @@ The GitHub Workflow Agents (GWA) webhook and state machine are fully functional.
 - **Webhook deployed**: `gwa-webhook` pod running in K8s default namespace
 - **Cloudflare tunnel**: `git-hooks.bto.bar` routes to webhook via `bto-services-prod` tunnel
 - **GitHub App**: `Workflow-Agents-BTO` installed on `bto-labs` org with `projects_v2_item` events
-- **State machine**: All 17 handlers trigger correctly for 38 valid transitions
-- **Cross-org access**: Webhook resolves issue details from `bto-labs` before triggering workflows in `jaybrto`
-- **Binaries deployed**: `gwa-*` binaries are now in the pod at `/usr/local/bin/`
+- **XState v5 state machine**: 7 states, 38 transitions with snapshot persistence in SQLite
+- **RabbitMQ AMQP backbone**: Topic exchanges for events, commands, and heartbeats
+- **Orchestrator service**: REST API, session aggregator, push bridge (ntfy.sh)
+- **Terminal streaming**: WebSocket relay on port 8080 with mid-stream join
+- **Session recordings**: Asciicast v2 format with MinIO upload and presigned URLs
+- **Terminal snapshots**: SVG via ansi-to-svg stored in SQLite
+- **Security**: Timing-safe HMAC verification, webhook deduplication (1-hour TTL)
+- **Shared types**: Canonical types in `src/shared/types.ts`
+- **Cross-org access**: Webhook resolves issue details from `bto-labs` before triggering workflows
+- **Binaries deployed**: `gwa-*` binaries in the pod at `/usr/local/bin/`
+- **SQLite persistence**: All session state, XState snapshots, activity logs (WAL mode)
+- **Behavioral tests**: Full lifecycle test suite
 
-### What's NOT Working
-- **SQLite not initialized**: Database schema not applied to `/home/runner/gwa.db`
-- **No actual REPL sessions**: Can't test pause/resume without the full stack
-- **Missing v3.4 features**: New custom fields, screenshot lifecycle, progress comments
+### What Was Removed in v4.0
+- **Redis**: Completely removed (ioredis, instrumentation, redis.ts, debug-redis.ts)
+- **workflow_dispatch chain**: Replaced by AMQP command publishing
 
 ## Architecture
 
 ```
 GitHub Project (bto-labs)
-       │
-       │ projects_v2_item webhook
-       ▼
-┌─────────────────────┐
-│  gwa-webhook pod    │  ← Cloudflare tunnel (git-hooks.bto.bar)
-│  (receives events)  │
-└─────────────────────┘
-       │
-       │ workflow_dispatch API
-       ▼
-┌─────────────────────┐
-│  GitHub Actions     │  ← project-sync.yml workflow
-│  (self-hosted)      │
-└─────────────────────┘
-       │
-       │ kubectl exec
-       ▼
-┌─────────────────────┐
-│  gwa-runner-0 pod   │  ← StatefulSet with Longhorn PVC
-│  (Claude sessions)  │
-└─────────────────────┘
-       │
-       ├── gwa-architect (planning/implementation)
-       ├── gwa-cleanup (session cleanup)
-       ├── gwa-respond (handle @claude-answer)
-       └── SQLite DB (/home/runner/gwa.db)
+       |
+       | projects_v2_item webhook
+       v
++------------------------------------------+
+|         Orchestrator Service              |
+|  Webhook Handler | REST API (port 3001)  |
+|  Push Bridge     | Session Aggregator    |
++---------+--------------------------------+
+          | AMQP commands       ^ AMQP events
+          v                     |
++------------------------------------------+
+|              RabbitMQ                     |
+|  gwa.commands | gwa.events | gwa.heartbeat|
++---------+----------------------------+---+
+          | commands                   ^ events
+          v                            |
++------------------------------------------+
+|        GWA Runner Pod (StatefulSet)       |
+|  XState v5   | Claude Code (tmux)        |
+|  Terminal Relay (WS :8080)  | SQLite     |
+|  OTEL -> Alloy | MinIO Upload            |
++------------------------------------------+
 ```
+
+## Key Components
+
+### XState v5 State Machine (`src/lib/state-machine.ts`)
+- 7 states: idle, planning, inProgress, qa, blocked, review, done
+- 38 column-to-event mappings matching all valid GitHub Project transitions
+- Guards for blocked state return (previousWasPlanning, previousWasInProgress, etc.)
+- Snapshot persistence to SQLite `sessions.xstate_snapshot` column
+- Automatic AMQP state change publishing on transitions
+
+### RabbitMQ AMQP (`src/lib/amqp.ts`)
+- Singleton connection with auto-reconnect (exponential backoff)
+- Publisher confirms via ConfirmChannel
+- Three topic exchanges: `gwa.events`, `gwa.commands`, `gwa.heartbeat`
+- 30-second heartbeat interval with pod health monitoring
+- Graceful shutdown with SIGTERM/SIGINT handlers
+
+### Orchestrator (`src/orchestrator/`)
+- **index.ts**: Service entry point, initializes its own SQLite DB, AMQP, REST API
+- **webhook-handler.ts**: HMAC verification, deduplication, publishes AMQP commands
+- **session-aggregator.ts**: Subscribes to `gwa.events.#`, maintains cross-pod state
+- **push-bridge.ts**: ntfy.sh notifications with debounce (30s) and rate limiting (5/min)
+- **rest-api.ts**: Sessions, answers, snapshots, recordings endpoints
+
+### Terminal Relay (`src/lib/terminal-relay.ts`)
+- WebSocket server on port 8080 at `/ws/{sessionId}`
+- tmux pipe-pane -> FIFO -> reader process -> WebSocket broadcast
+- Asciicast v2 recording written alongside stream
+- SVG snapshots via ansi-to-svg stored in SQLite
+- MinIO upload on stream stop with presigned URL generation
+
+### Shared Types (`src/shared/types.ts`)
+- `SessionState` enum (7 states)
+- `SessionEvent` union type (17 event types)
+- `AmqpMessage` interface (routing key, payload, timestamp, sessionId, traceId)
+- `PushNotification` interface (type, title, body, priority, tags)
+- `TerminalSnapshot` interface (sessionId, svgData, eventType, capturedAt)
+- `RecordingMetadata` interface (s3Key, durationMs, sizeBytes, format)
+- `ColumnTransition` interface (from, to, itemId, projectId)
+- `SessionContext` interface (XState machine context)
 
 ## Handler Reference
 
 Each handler is triggered by a column transition and executes in the workflow:
 
-| Handler | Transition | What It Should Do |
-|---------|------------|-------------------|
-| `start-planning` | Todo → Planning | Create session, start Claude REPL for planning |
-| `inject-prompt` | Planning → In Progress | Send implementation prompt to existing session |
-| `run-playwright` | In Progress → QA | Run Playwright e2e tests |
-| `status-update` | QA → Review | Post summary comment, notify reviewers |
-| `deploy-and-cleanup` | Review → Done | Merge PR, cleanup session |
-| `pause-for-question` | Any → Blocked | Pause session, post question to issue |
-| `send-answer` | Blocked → Any | Resume session with answer |
-| `resume-with-failures` | QA → In Progress | Resume with test failure context |
-| `request-retest` | Review → QA | Re-run tests |
-| `request-replanning` | Any → Planning | Reset session to planning phase |
-| `resume-implementation` | Review → In Progress | Resume implementation work |
-| `cancel-session` | Any → Todo | Cancel and cleanup session |
-| `reopen-issue` | Done → Any | Create new session for reopened issue |
-| `quick-start` | Todo → In Progress | Skip planning, start implementation directly |
-| `close-without-work` | Any → Done | Close without implementation |
-| `skip-qa` | In Progress → Review | Skip tests, go to review |
-| `skip-implementation` | Planning → QA | Pre-built solution, skip to QA |
+| Handler | Transition | What It Does |
+|---------|------------|-------------|
+| `start-planning` | Todo -> Planning | Create session, start Claude REPL for planning |
+| `inject-prompt` | Planning -> In Progress | Send implementation prompt to existing session |
+| `run-playwright` | In Progress -> QA | Run Playwright e2e tests |
+| `status-update` | QA -> Review | Post summary comment, notify reviewers |
+| `deploy-and-cleanup` | Review -> Done | Merge PR, cleanup session |
+| `pause-for-question` | Any -> Blocked | Pause session, post question to issue |
+| `send-answer` | Blocked -> Any | Resume session with answer |
+| `resume-with-failures` | QA -> In Progress | Resume with test failure context |
+| `request-retest` | Review -> QA | Re-run tests |
+| `request-replanning` | Any -> Planning | Reset session to planning phase |
+| `resume-implementation` | Review -> In Progress | Resume implementation work |
+| `cancel-session` | Any -> Todo | Cancel and cleanup session |
+| `reopen-issue` | Done -> Any | Create new session for reopened issue |
+| `quick-start` | Todo -> In Progress | Skip planning, start implementation directly |
+| `close-without-work` | Any -> Done | Close without implementation |
+| `skip-qa` | In Progress -> Review | Skip tests, go to review |
+| `skip-implementation` | Planning -> QA | Pre-built solution, skip to QA |
 
 ## Files to Understand
 
+### Core v4.0 Files
+- **`src/shared/types.ts`**: All canonical types
+- **`src/lib/state-machine.ts`**: XState v5 session lifecycle
+- **`src/lib/amqp.ts`**: RabbitMQ AMQP client
+- **`src/lib/terminal-relay.ts`**: WebSocket streaming, snapshots, recordings
+- **`src/orchestrator/index.ts`**: Orchestrator service entry point
+
 ### Webhook Handler
-- **`src/webhook/handler.ts`**: Receives GitHub webhooks, maps transitions to handlers, triggers workflows
-- **`Dockerfile.webhook`**: Builds the webhook binary
-- **`k8s/gwa-webhook.yaml`**: Webhook deployment + cloudflared tunnel
+- **`src/webhook/handler.ts`**: Receives GitHub webhooks, maps transitions to handlers
+- **`src/orchestrator/webhook-handler.ts`**: HMAC-verified webhook -> AMQP commands
 
-### Workflow
-- **`.github/workflows/project-sync.yml`**: Dispatched by webhook, executes handlers via kubectl
-
-### CLI Tools (need to be built/deployed)
-- **`src/architect.ts`**: Creates plans, spawns workers - NEEDS WORK
-- **`src/cleanup.ts`**: Cleans up sessions - NEEDS WORK
-- **`src/respond.ts`**: Handles @claude-answer responses - NEEDS WORK
-- **`src/orchestrate.ts`**: Main PR orchestration - EXISTS
+### CLI Tools
+- **`src/architect.ts`**: Creates plans, spawns workers
+- **`src/cleanup.ts`**: Cleans up sessions
+- **`src/respond.ts`**: Handles @claude-answer responses
+- **`src/orchestrate.ts`**: Main PR orchestration
 
 ### Database
-- **`schema.sql`**: SQLite schema (v2.1) - USE THIS
-- **`src/lib/db.ts`**: Database client - USE THIS
+- **`schema.sql`**: SQLite schema
+- **`src/lib/db.ts`**: Database client with WAL mode
 
-### Existing Infrastructure
-- **`k8s/gwa-runner-statefulset.yaml`**: Runner pod definition
-- **`k8s/gwa-runner-configmap.yaml`**: Configuration
-
-## SQLite Schema (NOT Redis)
-
-Recent decision: Use SQLite for ALL persistence, not Redis. The schema is in `schema.sql`:
-
-Key tables:
-- `sessions`: Core session tracking (issue, repo, status, tmux_session, worktree_path)
-- `questions`: Claude questions and answers
-- `agent_tasks`: Swarm worker task tracking
-- `activity_log`: Full audit trail
-- `checkpoints`: State snapshots for recovery
-- `commits`: Commits made by Claude
-
-Database location: `/home/runner/gwa.db` (on Longhorn PVC)
-
-## What You Need To Do
-
-### 1. Build and Deploy GWA Binaries
-
-The binaries need to be compiled and available in the runner pod:
+## Environment Variables
 
 ```bash
-# Build all binaries
-bun run build
+# RabbitMQ
+RABBITMQ_URL=amqp://guest:guest@rabbitmq.default.svc.cluster.local:5672
 
-# Binaries created in dist/:
-# - gwa-orchestrate
-# - gwa-respond
-# - gwa-cleanup
-# - gwa-architect
-# - gwa-worker
-# etc.
-```
+# MinIO
+MINIO_ENDPOINT=http://minio.default.svc.cluster.local:9000
+MINIO_BUCKET=gwa-recordings
+MINIO_ACCESS_KEY=<access-key>
+MINIO_SECRET_KEY=<secret-key>
 
-Options for deployment:
-1. **Bake into container image**: Update `Dockerfile` to include compiled binaries
-2. **Copy to PVC**: Copy binaries to Longhorn volume and add to PATH
-3. **ConfigMap/Secret mount**: Mount binaries from ConfigMap
+# Push Notifications
+NTFY_URL=https://ntfy.bto.bar/gwa
 
-Recommended: Update `Dockerfile` to include all binaries, rebuild and push image.
+# Orchestrator
+ORCHESTRATOR_PORT=3001
+ORCHESTRATOR_DB_PATH=/tmp/gwa-orchestrator.db
 
-### 2. Initialize SQLite Database
+# Terminal Streaming
+WS_PORT=8080
 
-The runner pod needs the SQLite database initialized:
-
-```bash
-# In the pod:
-sqlite3 /home/runner/gwa.db < schema.sql
-```
-
-Or create an init container that does this.
-
-### 3. Verify Environment Variables
-
-The runner pod needs these env vars (check `k8s/gwa-runner-statefulset.yaml`):
-- `GITHUB_TOKEN`: For GitHub API calls
-- `CLAUDE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`: For Claude Code
-- `GWA_DB_PATH`: Path to SQLite database (default: `/home/runner/gwa.db`)
-
-### 4. Test End-to-End Flow
-
-Use the test project in `bto-labs`:
-- **Project**: "GWA Demo Workflow" (number: 1)
-- **Test issue**: #3 "Test: Org-level webhook triggers"
-
-Test script available:
-```bash
-./scripts/test-all-transitions.sh
-```
-
-Or manually test a flow:
-```bash
-# Move item Todo → Planning (triggers start-planning)
-gh api graphql -f query='
-mutation {
-  updateProjectV2ItemFieldValue(
-    input: {
-      projectId: "PVT_kwDOD4hwbM4BOzHX"
-      itemId: "PVTI_lADOD4hwbM4BOzHXzglJ-wI"
-      fieldId: "PVTSSF_lADOD4hwbM4BOzHXzg9ZPE8"
-      value: { singleSelectOptionId: "33a0f031" }
-    }
-  ) {
-    projectV2Item { id }
-  }
-}'
-
-# Check webhook logs
-kubectl logs -l component=webhook -f
-
-# Check workflow runs
-gh run list --workflow=project-sync.yml --limit=5
-```
-
-### 5. Verify REPL Session Lifecycle
-
-Test the full lifecycle:
-1. **Todo → Planning**: Should create tmux session, start Claude REPL
-2. **Planning → Blocked**: Should pause session, post question
-3. **Blocked → Planning**: Should resume with answer
-4. **Planning → In Progress**: Should inject implementation prompt
-5. **In Progress → QA**: Should run tests
-6. **QA → Review**: Should post summary
-7. **Review → Done**: Should merge and cleanup
-
-## Column Option IDs (for GraphQL mutations)
-
-```
-Todo: d73904c2
-Planning: 33a0f031
-In Progress: d3f535bb
-QA: e5fb302c
-Blocked: c6b20921
-Review: 5a692329
-Done: da43ec98
+# Telemetry
+OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy.alloy.svc.cluster.local:4317
+OTEL_SERVICE_NAME=github-workflow-agents
+OTEL_SERVICE_VERSION=4.0.0
 ```
 
 ## Secrets Required
@@ -238,79 +188,15 @@ kubectl logs -l component=webhook -f
 # Runner pod logs
 kubectl logs gwa-runner-0 -f
 
+# Orchestrator logs
+kubectl logs -l component=orchestrator -f
+
 # Exec into runner pod
 kubectl exec -it gwa-runner-0 -- bash
 
+# Check RabbitMQ queues
+kubectl exec -it rabbitmq-0 -- rabbitmqctl list_queues
+
 # Check workflow runs
 gh run list --workflow=project-sync.yml --limit=10
-
-# View specific workflow run logs
-gh run view <RUN_ID> --log
-
-# Test webhook endpoint
-curl -X POST https://git-hooks.bto.bar/ -H "Content-Type: application/json" -d '{}'
-# Should return 401 (invalid signature) - means webhook is reachable
 ```
-
-## Key Commits for Context
-
-```
-d8a7450 test(transitions): add comprehensive state transition test script
-9fcd22f feat(webhook): add comprehensive state transition handling
-5da0362 fix(webhook): resolve issue details in webhook to avoid cross-org token issues
-d8f53d3 fix(workflow): accept webhook inputs and fetch issue details from content_id
-f8d90bd feat(webhook): add GitHub App webhook handler for project column transitions
-```
-
-## v3.4 New Features (Phase 15)
-
-### New Custom Fields to Add
-| Field | Type | Purpose |
-|-------|------|---------|
-| Pod Name | TEXT | K8s pod name (from hostname) |
-| Tmux Window | TEXT | Tmux window/pane ID |
-| Kubectl Command | TEXT | Full attach command |
-| Worktree Path | TEXT | Git worktree location |
-| Sub Agents Used | TEXT | Comma-separated agent names |
-
-### Files to Modify
-1. `templates/github-project.json` - Add 5 new custom fields
-2. `src/lib/projects.ts` - Extend CUSTOM_FIELDS and updateSessionFields()
-3. `src/transitions/start-planning.ts` - Call updateSessionFields(), post comment
-4. `src/lib/screenshot.ts` - Add saveScreenshotToDisk()
-5. `src/transitions/deploy-and-cleanup.ts` - Add screenshot cleanup
-6. `src/lib/swarm.ts` - Track spawned sub-agents
-7. `src/lib/comment-generator.ts` - Add progress comment type
-
-### Screenshot Lifecycle
-- Save to `/tmp/gwa-screenshots/` for troubleshooting
-- Track in SQLite `screenshots` table
-- Attach to comments only on errors/anomalies
-- Delete when session transitions to Done
-
-### Schema Migration Required
-```sql
-ALTER TABLE sessions ADD COLUMN project_item_id TEXT;
-CREATE INDEX idx_sessions_project_item ON sessions(project_item_id);
-```
-
-## Success Criteria
-
-The end-to-end integration is complete when:
-1. ✅ Moving an issue Todo → Planning creates a Claude REPL session
-2. ✅ The session persists in SQLite with correct metadata
-3. ✅ Moving to Blocked pauses the session
-4. ✅ Moving from Blocked resumes with the answer
-5. ✅ Moving to Done cleans up the session
-6. ✅ All 17 handlers execute without errors
-7. ✅ Test script `./scripts/test-all-transitions.sh` passes
-8. **NEW:** GitHub Project shows Pod Name, Tmux Window, Kubectl Command
-9. **NEW:** Screenshots tracked and cleaned up on Done
-
-## Notes
-
-- The webhook runs in a separate pod from the runner (separation of concerns)
-- Cross-org access works because webhook has GitHub App access to bto-labs
-- Workflow runs on self-hosted runner which has kubectl access to the cluster
-- Longhorn PVC ensures session data persists across pod restarts
-- SQLite with WAL mode handles concurrent access from multiple handlers

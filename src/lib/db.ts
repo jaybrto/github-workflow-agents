@@ -9,10 +9,13 @@ import { Database } from "bun:sqlite";
 import { readFileSync, existsSync } from "fs";
 import { dirname } from "path";
 
-// Database paths - can be overridden via environment
-// Defaults align with Helm chart values (see helm/gwa-runner/values.yaml)
-const DB_PATH = process.env.DB_PATH || "/home/runner/gwa.db";
+// Schema path — safe to capture at module load (does not change between tests)
 const SCHEMA_PATH = process.env.SCHEMA_PATH || "/opt/gwa/schema.sql";
+
+// Database path — read at call time so tests can override via process.env.DB_PATH
+function getDbPath(): string {
+  return process.env.DB_PATH || "/home/runner/gwa.db";
+}
 
 // Connection pool for concurrent access
 let dbInstance: Database | null = null;
@@ -26,7 +29,7 @@ export function getDatabase(): Database {
     return dbInstance;
   }
 
-  dbInstance = new Database(DB_PATH);
+  dbInstance = new Database(getDbPath());
   configurePragmas(dbInstance);
   return dbInstance;
 }
@@ -36,7 +39,7 @@ export function getDatabase(): Database {
  * Caller is responsible for closing this connection.
  */
 export function createConnection(): Database {
-  const db = new Database(DB_PATH);
+  const db = new Database(getDbPath());
   configurePragmas(db);
   return db;
 }
@@ -118,7 +121,10 @@ function createMinimalSchema(db: Database): void {
       last_activity_at INTEGER,
       initial_prompt TEXT,
       completion_summary TEXT,
-      error_message TEXT
+      error_message TEXT,
+      project_item_id TEXT,
+      xstate_snapshot TEXT,
+      xstate_schema_version INTEGER DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS questions (
@@ -151,6 +157,31 @@ function createMinimalSchema(db: Database): void {
       created_at INTEGER DEFAULT (unixepoch())
     );
   `);
+}
+
+/**
+ * Retry wrapper for critical write operations that may encounter SQLITE_BUSY.
+ * Retries up to 3 times with exponential backoff.
+ */
+export function withRetry<T>(fn: () => T, maxRetries: number = 3): T {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return fn();
+    } catch (error) {
+      lastError = error;
+      const isBusy =
+        error instanceof Error &&
+        (error.message.includes("SQLITE_BUSY") || error.message.includes("database is locked"));
+      if (!isBusy || attempt === maxRetries) {
+        throw error;
+      }
+      // Exponential backoff: 50ms, 100ms, 200ms
+      const delayMs = 50 * Math.pow(2, attempt);
+      Bun.sleepSync(delayMs);
+    }
+  }
+  throw lastError;
 }
 
 /**
@@ -192,6 +223,9 @@ export interface Session {
   error_message: string | null;
   // Phase 15 (v3.4) - GitHub Projects integration
   project_item_id: string | null;
+  // XState integration (v4.0)
+  xstate_snapshot: string | null;
+  xstate_schema_version: number | null;
 }
 
 export function getSession(sessionId: string): Session | null {

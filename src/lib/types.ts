@@ -10,22 +10,8 @@ export interface PRContext {
   mode?: "repl" | "headless";
 }
 
-export interface PRSession {
-  tmuxWindow: number;
-  podName: string;
-  worktreePath: string;
-  createdAt: number;
-  lastActivity: number;
-  status: "active" | "waiting" | "completed" | "error";
-}
-
-export interface PRQuestion {
-  question: string;
-  askedAt: number;
-  answer?: string;
-  answeredAt?: number;
-  answeredBy?: string;
-}
+// PRSession and PRQuestion types have been removed.
+// Session and Question data is now managed via SQLite in src/lib/db.ts.
 
 export interface ClaudeStreamEvent {
   type: string;

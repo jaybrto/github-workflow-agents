@@ -10,6 +10,7 @@ import { readFileSync, existsSync } from "fs";
 import { withSpan, shutdown as shutdownTelemetry, log } from "../lib/telemetry.js";
 import * as tmux from "../lib/tmux.js";
 import * as db from "../lib/db.js";
+import { restoreActor, persistSnapshot, getStateName, canTransition } from "../lib/state-machine.js";
 
 const WORKTREES_PATH = "/home/runner/worktrees";
 
@@ -118,7 +119,19 @@ ${planContent}
 Begin with the first task that has no dependencies.`;
   }
 
-  // 4. Update session status
+  // 4. Transition XState: planning -> inProgress
+  const actor = restoreActor(sessionId);
+  if (actor) {
+    const event = { type: "INJECT_PROMPT" as const };
+    if (!canTransition(actor, event)) {
+      throw new Error(`Invalid state transition: cannot INJECT_PROMPT from ${getStateName(actor)}`);
+    }
+    actor.send(event);
+    persistSnapshot(sessionId, actor.getSnapshot());
+    log("debug", `XState transitioned to ${getStateName(actor)}`);
+  }
+
+  // 5. Update session status
   db.updateSessionStatus(sessionId, "running");
   db.logActivity(sessionId, "implementation_started", {}, "workflow");
 

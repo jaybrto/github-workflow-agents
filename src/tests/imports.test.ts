@@ -49,15 +49,6 @@ describe("Library Imports", () => {
     expect(typeof telemetry.Metrics).toBe("object");
   });
 
-  test("redis.ts exports required functions", async () => {
-    const redis = await import("../lib/redis.js");
-
-    expect(typeof redis.getRedisClient).toBe("function");
-    expect(typeof redis.getSession).toBe("function");
-    expect(typeof redis.createSession).toBe("function");
-    expect(typeof redis.closeRedis).toBe("function");
-  });
-
   test("swarm.ts exports required functions", async () => {
     const swarm = await import("../lib/swarm.js");
 

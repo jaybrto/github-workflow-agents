@@ -1,4 +1,4 @@
-# GitHub Workflow Agents (GWA) v3.3
+# GitHub Workflow Agents (GWA) v4.0
 
 Automated Claude Code integration for GitHub with persistent sessions, multi-agent orchestration, and GitHub Projects workflow automation on Kubernetes.
 
@@ -28,8 +28,13 @@ GWA transforms GitHub issues into completed, tested pull requests using Claude C
 
 ### Core Capabilities
 - **GitHub Projects Integration**: Automated workflow via column transitions
+- **XState v5 State Machine**: 7 states, 38 transitions with snapshot persistence
+- **RabbitMQ AMQP Backbone**: Event distribution and command routing between pods and orchestrator
 - **Multi-Agent Swarm**: Architect agent spawns worker agents for parallel task execution
-- **Persistent Sessions**: SQLite + Redis for session state across pod restarts
+- **Persistent Sessions**: SQLite with WAL mode for all session state
+- **Live Terminal Streaming**: WebSocket relay for real-time terminal output
+- **Push Notifications**: Mobile alerts via ntfy.sh for blocked, error, and complete events
+- **Session Recordings**: Asciicast v2 format with MinIO storage and presigned playback URLs
 - **Git Worktrees**: Isolated worktree per issue for safe parallel work
 - **Observability**: Full OpenTelemetry instrumentation (traces, metrics, logs)
 
@@ -117,17 +122,37 @@ GWA handles all possible project board column transitions via webhook. When an i
 ### System Components
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  GitHub Action  │────▶│  GWA Runner Pod  │────▶│   Claude Code   │
-│   (trigger)     │     │  (StatefulSet)   │     │   (in tmux)     │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                               │
-              ┌────────────────┼────────────────┐
-              ▼                ▼                ▼
-        ┌──────────┐    ┌───────────┐    ┌──────────┐
-        │  SQLite  │    │  Redis    │    │  Alloy   │
-        │ (sessions)│    │ (cache)   │    │  (OTEL)  │
-        └──────────┘    └───────────┘    └──────────┘
+                    ┌──────────────────────────────────────────────────────┐
+                    │              GitHub Project Board                     │
+                    └──────────────────────┬───────────────────────────────┘
+                                           │ projects_v2_item webhook
+                                           ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         Orchestrator Service                              │
+│  ┌──────────────┐  ┌───────────────┐  ┌─────────────┐  ┌─────────────┐ │
+│  │ Webhook      │  │ REST API      │  │ Push Bridge │  │  Session    │ │
+│  │ Handler      │  │ (port 3001)   │  │ (ntfy.sh)   │  │ Aggregator  │ │
+│  └──────┬───────┘  └───────────────┘  └─────────────┘  └─────────────┘ │
+└─────────┼──────────────────────────────────────────────────────────────┘
+          │ AMQP commands                        ▲ AMQP events
+          ▼                                      │
+┌──────────────────────────────────────────────────────────────────────────┐
+│                            RabbitMQ                                       │
+│  gwa.commands (topic)  |  gwa.events (topic)  |  gwa.heartbeat (topic)  │
+└─────────┬──────────────────────────────────────┬─────────────────────────┘
+          │ commands                              ▲ events + heartbeats
+          ▼                                      │
+┌──────────────────────────────────────────────────────────────────────────┐
+│                     GWA Runner Pod (StatefulSet)                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  ┌───────────┐  │
+│  │ XState v5   │  │ Claude Code  │  │ Terminal Relay │  │  SQLite   │  │
+│  │ State Mach. │  │ (in tmux)    │  │  (WS :8080)    │  │  (WAL)    │  │
+│  └─────────────┘  └──────────────┘  └────────────────┘  └───────────┘  │
+│                                                                          │
+│  ┌──────────────┐  ┌──────────────┐                                      │
+│  │ OTEL → Alloy │  │ MinIO Upload │                                      │
+│  └──────────────┘  └──────────────┘                                      │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### CLI Tools
@@ -149,25 +174,31 @@ GWA handles all possible project board column transitions via webhook. When an i
 
 ### Tech Stack
 
-| Concern | Technology |
-|---------|------------|
-| Runtime | Bun (compiled binaries) |
-| Container | Node.js 22 (for Claude Code CLI) |
-| Orchestration | Kubernetes (K3s) |
-| Storage | Longhorn (persistent volumes) |
-| Database | SQLite with WAL mode |
-| Session Cache | Redis (ioredis) |
-| GitHub API | @octokit/rest + GraphQL |
-| Observability | OpenTelemetry → Alloy → Tempo/Mimir/Loki |
+| Concern | Technology | Purpose |
+|---------|-----------|---------|
+| Runtime | Bun (compiled binaries) | TypeScript execution and binary compilation |
+| Container | Node.js 22 (for Claude Code CLI) | Claude Code subprocess host |
+| Orchestration | Kubernetes (K3s) | Pod scheduling and management |
+| Storage | Longhorn (persistent volumes) | Session data persistence across restarts |
+| Database | SQLite (bun:sqlite, WAL mode) | All session and activity persistence |
+| State Machine | XState v5 | Session lifecycle with 7 states, 38 transitions |
+| Message Broker | RabbitMQ (AMQP via amqplib) | Event distribution, command routing, heartbeats |
+| Push Notifications | ntfy.sh | Mobile alerts for blocked/error/complete events |
+| Terminal Streaming | Bun WebSocket (port 8080) | Live terminal output relay with mid-stream join |
+| Session Recordings | Asciicast v2 + MinIO | Terminal recordings with presigned playback URLs |
+| GitHub API | @octokit/rest + GraphQL | PRs, comments, project board mutations |
+| Observability | OpenTelemetry → Alloy → Tempo/Mimir/Loki | Traces, metrics, logs |
 
 ## Prerequisites
 
 - Kubernetes cluster (K3s recommended)
 - Longhorn storage provisioner
-- Redis instance
+- RabbitMQ instance (AMQP 0-9-1)
+- MinIO or S3-compatible storage (for session recordings)
 - GitHub App or PAT with repo permissions
 - Claude Code OAuth token
 - Alloy collector (for telemetry)
+- ntfy.sh server (for push notifications, optional)
 
 ## Installation
 
@@ -192,6 +223,7 @@ kubectl create secret docker-registry ghcr-secret \
 ### 3. Deploy to Kubernetes
 
 ```bash
+# Deploy runner pods, orchestrator, and supporting services
 kubectl apply -f k8s/
 ```
 
@@ -294,6 +326,15 @@ git push origin main
 │   ├── architect.ts           # Plan creation, worker spawning
 │   ├── worker.ts              # Sub-task execution
 │   ├── setup-project.ts       # GitHub Project setup
+│   ├── shared/                # Canonical shared types
+│   │   ├── types.ts           # SessionState, SessionEvent, AmqpMessage, etc.
+│   │   └── index.ts           # Re-exports
+│   ├── orchestrator/          # Orchestrator service
+│   │   ├── index.ts           # Service entry point (AMQP + REST)
+│   │   ├── webhook-handler.ts # HMAC-verified webhook → AMQP commands
+│   │   ├── session-aggregator.ts # Cross-pod session state aggregation
+│   │   ├── push-bridge.ts     # ntfy.sh push notifications
+│   │   └── rest-api.ts        # REST API (sessions, answers, snapshots)
 │   ├── transitions/           # Column transition handlers
 │   │   ├── start-planning.ts
 │   │   ├── inject-prompt.ts
@@ -310,8 +351,10 @@ git push origin main
 │       ├── claude.ts          # Claude Code subprocess
 │       ├── github.ts          # GitHub API client
 │       ├── projects.ts        # GitHub Projects v2 GraphQL
-│       ├── redis.ts           # Redis client
 │       ├── db.ts              # SQLite database
+│       ├── amqp.ts            # RabbitMQ AMQP client (publish, subscribe, heartbeats)
+│       ├── state-machine.ts   # XState v5 session lifecycle machine
+│       ├── terminal-relay.ts  # WebSocket relay, snapshots, asciicast recordings
 │       ├── tmux.ts            # Tmux session management
 │       ├── swarm.ts           # Multi-agent orchestration
 │       ├── telemetry.ts       # OpenTelemetry setup
@@ -330,7 +373,7 @@ git push origin main
 │       ├── checklist.md
 │       ├── decisions.md
 │       └── snippets.md
-├── schema.sql                 # SQLite schema (v2.1)
+├── schema.sql                 # SQLite schema
 ├── Dockerfile                 # Multi-stage build
 └── package.json
 ```
@@ -369,9 +412,10 @@ For complex tasks, the Architect agent can spawn worker agents:
 
 ### Session Persistence
 
-- **SQLite**: Primary session store with full audit trail
-- **Redis**: Fast PR→session lookups (7-day TTL)
-- **Longhorn**: Persists `~/.claude/` across pod restarts
+- **SQLite**: All session state, XState snapshots, activity logs, and terminal snapshots (WAL mode)
+- **RabbitMQ**: Event distribution between runner pods and orchestrator
+- **MinIO**: Asciicast v2 session recordings with presigned playback URLs
+- **Longhorn**: Persists `~/.claude/` and SQLite database across pod restarts
 - **Worktrees**: Isolated at `/home/runner/worktrees/issue-{N}/`
 
 ## Observability
@@ -382,7 +426,7 @@ Sent to Tempo via Alloy (gRPC on port 4317):
 - `orchestrate` - Full PR processing span
 - `transition.*` - Column transition handlers
 - `swarm.*` - Multi-agent operations
-- `redis.*` - Auto-instrumented Redis commands
+- `amqp.*` - RabbitMQ publish/consume operations
 
 ### Metrics
 
@@ -403,10 +447,30 @@ Sent to Loki via Alloy (HTTP on port 4318):
 ### Environment Variables
 
 ```bash
+# Telemetry
 OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy.alloy.svc.cluster.local:4317
 OTEL_SERVICE_NAME=github-workflow-agents
-OTEL_SERVICE_VERSION=3.3.0
+OTEL_SERVICE_VERSION=4.0.0
 DEPLOYMENT_ENVIRONMENT=production
+
+# RabbitMQ
+RABBITMQ_URL=amqp://guest:guest@rabbitmq.default.svc.cluster.local:5672
+
+# MinIO (for session recordings)
+MINIO_ENDPOINT=http://minio.default.svc.cluster.local:9000
+MINIO_BUCKET=gwa-recordings
+MINIO_ACCESS_KEY=<access-key>
+MINIO_SECRET_KEY=<secret-key>
+
+# Push Notifications
+NTFY_URL=https://ntfy.bto.bar/gwa
+
+# Orchestrator
+ORCHESTRATOR_PORT=3001
+ORCHESTRATOR_DB_PATH=/tmp/gwa-orchestrator.db
+
+# Terminal Streaming
+WS_PORT=8080
 ```
 
 ## Database Schema
@@ -415,16 +479,65 @@ GWA uses SQLite with WAL mode for concurrent access. Key tables:
 
 | Table | Purpose |
 |-------|---------|
-| `sessions` | Core session tracking |
+| `sessions` | Core session tracking with XState snapshot persistence |
 | `questions` | Claude questions and answers |
 | `agent_tasks` | Swarm worker task tracking |
 | `activity_log` | Full audit trail |
 | `checkpoints` | State snapshots for recovery |
 | `commits` | Commits made by Claude |
+| `terminal_snapshots` | SVG terminal snapshots (ansi-to-svg) |
 
-See `schema.sql` for full schema (v2.1).
+See `schema.sql` for the full schema.
+
+## Orchestrator Service
+
+The orchestrator runs as a separate service that aggregates session state across all runner pods.
+
+### REST API (port 3001)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check with uptime, pod status, session count |
+| `/sessions` | GET | List all active sessions across pods |
+| `/sessions/:id` | GET | Session detail with activity feed |
+| `/sessions/:id/answer` | POST | Send an answer to a blocked session |
+| `/sessions/:id/snapshots` | GET | Terminal snapshots for a session |
+| `/sessions/:id/recordings` | GET | Asciicast recordings for a session |
+
+### Push Notifications
+
+The push bridge subscribes to AMQP events and sends notifications via ntfy.sh:
+
+| Event | Priority | Notification |
+|-------|----------|-------------|
+| Session blocked | High (4) | Human input needed |
+| Session error | Urgent (5) | Session encountered an error |
+| Session complete | Default (3) | Session finished |
+
+Rate limiting: 30s debounce per session, 5-minute cooldown, 5 notifications/minute global cap.
+
+## Terminal Streaming
+
+Live terminal output is available via WebSocket on port 8080.
+
+### WebSocket Connection
+
+Connect to `ws://<pod-ip>:8080/ws/{sessionId}` to receive real-time terminal output. On connect, the current pane content is sent immediately for mid-stream join support.
+
+### Snapshots
+
+Terminal snapshots are captured as SVG via ansi-to-svg on state transitions and stored in SQLite for later retrieval.
+
+### Recordings
+
+Session recordings use the asciicast v2 format, uploaded to MinIO on session completion. Presigned URLs (1-hour expiry) are generated for playback.
 
 ## Security
+
+### Webhook Verification
+- Timing-safe HMAC signature verification (crypto.timingSafeEqual)
+- Empty webhook secret fails closed (rejects all requests)
+- Webhook delivery deduplication with 1-hour TTL prevents replay attacks
 
 ### Input Validation
 - Repo format: `^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$`

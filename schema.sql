@@ -44,7 +44,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     error_message TEXT,               -- If status = "error"
 
     -- GitHub Projects integration (v2.2)
-    project_item_id TEXT              -- GitHub Projects item ID for updates
+    project_item_id TEXT,             -- GitHub Projects item ID for updates
+
+    -- XState integration (v4.0)
+    xstate_snapshot TEXT,             -- Serialized XState actor snapshot
+    xstate_schema_version INTEGER DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
@@ -306,3 +310,24 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_session ON agent_tasks(session_id);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status);
+
+-- ============================================
+-- TERMINAL_SNAPSHOTS: Captured terminal state
+-- ============================================
+CREATE TABLE IF NOT EXISTS terminal_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    svg_data TEXT NOT NULL,
+    event_type TEXT NOT NULL,              -- "planning_start" | "error" | "checkpoint" | etc.
+    captured_at INTEGER DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_terminal_snapshots_session ON terminal_snapshots(session_id);
+
+-- ============================================
+-- VIEWS
+-- ============================================
+
+-- Active sessions view for quick querying
+CREATE VIEW IF NOT EXISTS active_sessions AS
+SELECT * FROM sessions WHERE status IN ('pending', 'starting', 'running', 'blocked');

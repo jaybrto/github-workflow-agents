@@ -1,0 +1,99 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gwa-orchestrator
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-workflow-agents
+      component: orchestrator
+  template:
+    metadata:
+      labels:
+        app: github-workflow-agents
+        component: orchestrator
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: orchestrator
+          image: ghcr.io/jaybrto/gwa-orchestrator:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3001
+              protocol: TCP
+          env:
+            - name: ORCHESTRATOR_PORT
+              value: "3001"
+            - name: ORCHESTRATOR_DB_PATH
+              value: "/data/gwa-orchestrator.db"
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: rabbitmq-url
+                  optional: true
+            - name: NTFY_URL
+              value: "https://ntfy.bto.bar/gwa"
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: github-token
+            - name: GITHUB_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-webhook-secrets
+                  key: github-app-secret
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          volumeMounts:
+            - name: orchestrator-data
+              mountPath: /data
+      volumes:
+        - name: orchestrator-data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gwa-orchestrator
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: orchestrator
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+      protocol: TCP
+  selector:
+    app: github-workflow-agents
+    component: orchestrator

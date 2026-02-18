@@ -39,10 +39,6 @@ spec:
                 - "--pod"
                 - "gwa-runner-0"
               env:
-                - name: REDIS_HOST
-                  value: "redis.default.svc.cluster.local"
-                - name: REDIS_PORT
-                  value: "6379"
                 - name: GITHUB_TOKEN
                   valueFrom:
                     secretKeyRef:

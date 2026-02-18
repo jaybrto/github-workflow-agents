@@ -5,11 +5,37 @@
  * and triggers appropriate workflows based on project column changes.
  */
 
-import { createHmac } from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
 
-// Environment configuration
-const WEBHOOK_SECRET = process.env.GITHUB_APP_SECRET || "";
+// Environment configuration (read at call time so tests can override)
+function getWebhookSecret(): string {
+  return process.env.GITHUB_APP_SECRET || "";
+}
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
+
+// Deduplication map: delivery ID -> timestamp (ms)
+const seenDeliveries = new Map<string, number>();
+const DEDUP_TTL_MS = 60 * 60 * 1000; // 1 hour
+const DEDUP_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Remove expired entries from the deduplication map
+ */
+export function cleanupExpiredDeliveries(): void {
+  const now = Date.now();
+  for (const [id, timestamp] of seenDeliveries) {
+    if (now - timestamp > DEDUP_TTL_MS) {
+      seenDeliveries.delete(id);
+    }
+  }
+}
+
+// Start periodic cleanup
+const cleanupInterval = setInterval(cleanupExpiredDeliveries, DEDUP_CLEANUP_INTERVAL_MS);
+// Allow the process to exit without waiting for the interval
+if (typeof cleanupInterval === "object" && "unref" in cleanupInterval) {
+  cleanupInterval.unref();
+}
 
 interface ProjectV2ItemEvent {
   action: "created" | "edited" | "deleted" | "archived" | "restored" | "reordered";
@@ -60,19 +86,29 @@ interface ProjectV2ItemEvent {
 // }
 
 /**
- * Verify the webhook signature using HMAC-SHA256
+ * Verify the webhook signature using timing-safe HMAC-SHA256 comparison.
+ * Fails closed: returns false if the secret is not configured.
  */
-function verifySignature(payload: string, signature: string): boolean {
-  if (!WEBHOOK_SECRET) {
-    console.warn("[Webhook] No secret configured, skipping verification");
-    return true;
+export function verifySignature(payload: string, signature: string, secret?: string): boolean {
+  const webhookSecret = secret ?? getWebhookSecret();
+
+  if (!webhookSecret) {
+    console.error("[Webhook] No secret configured, rejecting request (fail closed)");
+    return false;
   }
 
-  const expectedSignature = `sha256=${createHmac("sha256", WEBHOOK_SECRET)
+  const expectedSignature = `sha256=${createHmac("sha256", webhookSecret)
     .update(payload)
     .digest("hex")}`;
 
-  return signature === expectedSignature;
+  const expectedBuf = Buffer.from(expectedSignature, "utf8");
+  const receivedBuf = Buffer.from(signature, "utf8");
+
+  if (expectedBuf.length !== receivedBuf.length) {
+    return false;
+  }
+
+  return timingSafeEqual(expectedBuf, receivedBuf);
 }
 
 interface ContentDetails {
@@ -359,6 +395,15 @@ async function handleRequest(request: Request): Promise<Response> {
 
   console.log(`[Webhook] Received ${eventType} event (delivery: ${deliveryId})`);
 
+  // Check for duplicate delivery
+  if (deliveryId && seenDeliveries.has(deliveryId)) {
+    console.log(`[Webhook] Duplicate delivery ${deliveryId}, skipping`);
+    return new Response(JSON.stringify({ status: "already_processed" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   // Read the body
   const body = await request.text();
 
@@ -366,6 +411,11 @@ async function handleRequest(request: Request): Promise<Response> {
   if (!verifySignature(body, signature)) {
     console.error(`[Webhook] Invalid signature`);
     return new Response("Invalid signature", { status: 401 });
+  }
+
+  // Record this delivery ID to prevent reprocessing
+  if (deliveryId) {
+    seenDeliveries.set(deliveryId, Date.now());
   }
 
   // Parse the payload
@@ -388,6 +438,15 @@ async function handleRequest(request: Request): Promise<Response> {
 
   return new Response("OK", { status: 200 });
 }
+
+/** Exported for testing — the request handler */
+export { handleRequest };
+
+/** Exported for testing — access to the dedup map */
+export const _testing = {
+  seenDeliveries,
+  DEDUP_TTL_MS,
+};
 
 // Start the server
 const port = parseInt(process.env.PORT || "3000");

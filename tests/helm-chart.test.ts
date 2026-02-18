@@ -148,14 +148,21 @@ describe("Helm Chart: gwa-runner", () => {
       expect(repoEnv.value).toBe("jaybrto/myapp");
     });
 
-    test("sets Redis environment variables", () => {
+    test("does not set Redis environment variables", () => {
       const container = statefulSet.spec.template.spec.containers[0];
       const redisHost = container.env.find((e: any) => e.name === "REDIS_HOST");
       const redisPort = container.env.find((e: any) => e.name === "REDIS_PORT");
 
-      expect(redisHost).toBeDefined();
-      expect(redisPort).toBeDefined();
+      expect(redisHost).toBeUndefined();
+      expect(redisPort).toBeUndefined();
     });
+
+    // TODO: Add RabbitMQ env var assertion once AMQP backbone is implemented
+    // test("sets RabbitMQ environment variables", () => {
+    //   const container = statefulSet.spec.template.spec.containers[0];
+    //   const rabbitmqUrl = container.env.find((e: any) => e.name === "RABBITMQ_URL");
+    //   expect(rabbitmqUrl).toBeDefined();
+    // });
 
     test("sets OpenTelemetry environment variables", () => {
       const container = statefulSet.spec.template.spec.containers[0];

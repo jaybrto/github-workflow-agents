@@ -16,10 +16,19 @@ image:
 imagePullSecrets:
   - name: ghcr-secret
 
-# Redis configuration
-redis:
-  host: redis-haproxy.redis-system.svc.cluster.local
-  port: 6379
+# RabbitMQ configuration (Wave 3)
+rabbitmq:
+  url: "amqp://guest:guest@rabbitmq.default.svc.cluster.local:5672"
+
+# Ntfy push notifications (Wave 3)
+ntfy:
+  url: "https://ntfy.bto.bar"
+  topic: "gwa"
+
+# MinIO object storage (Wave 3)
+minio:
+  endpoint: "minio.default.svc.cluster.local:9000"
+  bucket: "gwa-recordings"
 
 # Database configuration
 database:

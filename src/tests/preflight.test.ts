@@ -114,10 +114,10 @@ describe("Pre-flight: Package.json Validation", () => {
     const deps = pkg.dependencies as Record<string, string>;
 
     expect(deps["@octokit/rest"]).toBeDefined();
-    expect(deps["ioredis"]).toBeDefined();
     expect(deps["node-tmux"]).toBeDefined();
     expect(deps["@anthropic-ai/sdk"]).toBeDefined();
     expect(deps["@opentelemetry/sdk-node"]).toBeDefined();
+    expect(deps["xstate"]).toBeDefined();
   });
 
   test("has build scripts for all entry points", () => {

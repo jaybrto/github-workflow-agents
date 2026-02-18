@@ -13,7 +13,7 @@ import {
   capturePane,
   setEnvironment,
 } from "./tmux.js";
-import { getRedisClient } from "./redis.js";
+import { getDatabase } from "./db.js";
 import { log, withSpan, Metrics } from "./telemetry.js";
 import { ClaudeAuthError, detectAuthFailure } from "./claude.js";
 
@@ -36,73 +36,80 @@ export interface REPLStartResult {
 }
 
 // ============================================================================
-// REDIS KEYS
+// SESSION STORAGE (SQLite)
 // ============================================================================
 
-const REPL_TTL_SECONDS = 86400; // 24 hours
-
-function replSessionKey(sessionId: string): string {
-  return `repl:session:${sessionId}`;
+function storeSession(session: REPLSession): void {
+  const db = getDatabase();
+  // Use sessions table with repl-specific fields
+  db.run(
+    `INSERT OR REPLACE INTO sessions
+      (id, type, status, github_number, github_type, repo, tmux_window, worktree_path, started_at, last_activity_at, claude_session_id)
+     VALUES (?, 'repl', ?, 0, 'repl', 'repl', ?, ?, ?, unixepoch(), ?)`,
+    [
+      session.sessionId,
+      session.status,
+      session.tmuxWindow,
+      session.workingDir,
+      Math.floor(session.startedAt / 1000),
+      session.sessionId,
+    ]
+  );
 }
 
-function replByWindowKey(tmuxWindow: number): string {
-  return `repl:window:${tmuxWindow}`;
-}
+function loadSession(sessionId: string): REPLSession | null {
+  const db = getDatabase();
+  const row = db
+    .query(`SELECT * FROM sessions WHERE id = ? AND type = 'repl'`)
+    .get(sessionId) as {
+      id: string;
+      status: string;
+      tmux_window: number | null;
+      worktree_path: string | null;
+      started_at: number | null;
+    } | null;
 
-// ============================================================================
-// SESSION STORAGE
-// ============================================================================
-
-async function storeSession(session: REPLSession): Promise<void> {
-  const redis = getRedisClient();
-  const key = replSessionKey(session.sessionId);
-
-  await redis.hset(key, {
-    session_id: session.sessionId,
-    tmux_window: session.tmuxWindow.toString(),
-    working_dir: session.workingDir,
-    started_at: session.startedAt.toString(),
-    status: session.status,
-  });
-
-  await redis.expire(key, REPL_TTL_SECONDS);
-
-  // Also store reverse lookup by window
-  const windowKey = replByWindowKey(session.tmuxWindow);
-  await redis.set(windowKey, session.sessionId, "EX", REPL_TTL_SECONDS);
-}
-
-async function loadSession(sessionId: string): Promise<REPLSession | null> {
-  const redis = getRedisClient();
-  const data = await redis.hgetall(replSessionKey(sessionId));
-
-  if (!data || !data.session_id) return null;
+  if (!row || row.tmux_window === null) return null;
 
   return {
-    sessionId: data.session_id,
-    tmuxWindow: parseInt(data.tmux_window, 10),
-    workingDir: data.working_dir,
-    startedAt: parseInt(data.started_at, 10),
-    status: data.status as REPLSession["status"],
+    sessionId: row.id,
+    tmuxWindow: row.tmux_window,
+    workingDir: row.worktree_path || "",
+    startedAt: (row.started_at || 0) * 1000,
+    status: row.status as REPLSession["status"],
   };
 }
 
-async function updateSessionStatus(
+function updateSessionStatus(
   sessionId: string,
   status: REPLSession["status"]
-): Promise<void> {
-  const redis = getRedisClient();
-  await redis.hset(replSessionKey(sessionId), "status", status);
+): void {
+  const db = getDatabase();
+  db.run(
+    `UPDATE sessions SET status = ?, last_activity_at = unixepoch() WHERE id = ?`,
+    [status, sessionId]
+  );
 }
 
-async function deleteSession(sessionId: string): Promise<void> {
-  const redis = getRedisClient();
-  const session = await loadSession(sessionId);
+function deleteSession(sessionId: string): void {
+  const db = getDatabase();
+  db.run(`DELETE FROM sessions WHERE id = ? AND type = 'repl'`, [sessionId]);
+}
 
-  if (session) {
-    await redis.del(replSessionKey(sessionId));
-    await redis.del(replByWindowKey(session.tmuxWindow));
-  }
+function touchSession(sessionId: string): void {
+  const db = getDatabase();
+  db.run(
+    `UPDATE sessions SET last_activity_at = unixepoch() WHERE id = ?`,
+    [sessionId]
+  );
+}
+
+function getSessionIdByWindow(tmuxWindow: number): string | null {
+  const db = getDatabase();
+  const row = db
+    .query(`SELECT id FROM sessions WHERE tmux_window = ? AND type = 'repl' AND status NOT IN ('completed', 'error') ORDER BY created_at DESC LIMIT 1`)
+    .get(tmuxWindow) as { id: string } | null;
+  return row?.id || null;
 }
 
 // ============================================================================
@@ -186,8 +193,8 @@ export async function startREPL(
         status: "starting",
       };
 
-      // Store session in Redis
-      await storeSession(session);
+      // Store session in SQLite
+      storeSession(session);
 
       // Start Claude in interactive mode (no --print flag)
       await sendCommand(tmuxWindow, "claude");
@@ -206,7 +213,7 @@ export async function startREPL(
 
         // Clean up the stuck window and session
         await killWindow(tmuxWindow);
-        await deleteSession(sessionId);
+        deleteSession(sessionId);
 
         throw new ClaudeAuthError(
           `Claude is stuck on the authentication screen. ` +
@@ -221,7 +228,7 @@ export async function startREPL(
 
       // Update status to running
       session.status = "running";
-      await updateSessionStatus(sessionId, "running");
+      updateSessionStatus(sessionId, "running");
 
       log("info", "REPL session started and prompt sent", {
         sessionId,
@@ -265,7 +272,7 @@ export async function sendToREPL(
       span.setAttribute("repl.session_id", sessionId);
       span.setAttribute("repl.text_length", text.length);
 
-      const session = await loadSession(sessionId);
+      const session = loadSession(sessionId);
 
       if (!session) {
         throw new Error(`REPL session not found: ${sessionId}`);
@@ -274,7 +281,7 @@ export async function sendToREPL(
       // Verify the window still exists
       const exists = await windowExists(session.tmuxWindow);
       if (!exists) {
-        await updateSessionStatus(sessionId, "error");
+        updateSessionStatus(sessionId, "error");
         throw new Error(`Tmux window no longer exists for session: ${sessionId}`);
       }
 
@@ -289,9 +296,7 @@ export async function sendToREPL(
       await sendKeys(session.tmuxWindow, "Enter");
 
       // Touch the session to keep it alive
-      const redis = getRedisClient();
-      await redis.expire(replSessionKey(sessionId), REPL_TTL_SECONDS);
-      await redis.expire(replByWindowKey(session.tmuxWindow), REPL_TTL_SECONDS);
+      touchSession(sessionId);
     },
     {
       attributes: {
@@ -316,7 +321,7 @@ export async function getREPLStatus(
     async (span) => {
       span.setAttribute("repl.session_id", sessionId);
 
-      const session = await loadSession(sessionId);
+      const session = loadSession(sessionId);
 
       if (!session) {
         log("debug", "REPL session not found", { sessionId });
@@ -330,7 +335,7 @@ export async function getREPLStatus(
           sessionId,
           tmuxWindow: session.tmuxWindow,
         });
-        await updateSessionStatus(sessionId, "completed");
+        updateSessionStatus(sessionId, "completed");
         session.status = "completed";
       }
 
@@ -355,7 +360,7 @@ export async function stopREPL(sessionId: string): Promise<void> {
     async (span) => {
       span.setAttribute("repl.session_id", sessionId);
 
-      const session = await loadSession(sessionId);
+      const session = loadSession(sessionId);
 
       if (!session) {
         log("warn", "Attempted to stop non-existent REPL session", { sessionId });
@@ -394,8 +399,8 @@ export async function stopREPL(sessionId: string): Promise<void> {
         }
       }
 
-      // Remove session from Redis
-      await deleteSession(sessionId);
+      // Remove session from SQLite
+      deleteSession(sessionId);
 
       Metrics.sessionEnded();
 
@@ -426,7 +431,7 @@ export async function captureREPLOutput(
       span.setAttribute("repl.session_id", sessionId);
       span.setAttribute("repl.capture_lines", lines);
 
-      const session = await loadSession(sessionId);
+      const session = loadSession(sessionId);
 
       if (!session) {
         throw new Error(`REPL session not found: ${sessionId}`);
@@ -459,12 +464,12 @@ export async function markREPLWaiting(sessionId: string): Promise<void> {
     async (span) => {
       span.setAttribute("repl.session_id", sessionId);
 
-      const session = await loadSession(sessionId);
+      const session = loadSession(sessionId);
       if (!session) {
         throw new Error(`REPL session not found: ${sessionId}`);
       }
 
-      await updateSessionStatus(sessionId, "waiting");
+      updateSessionStatus(sessionId, "waiting");
       log("info", "REPL session marked as waiting", { sessionId });
     },
     {
@@ -486,12 +491,12 @@ export async function markREPLCompleted(sessionId: string): Promise<void> {
     async (span) => {
       span.setAttribute("repl.session_id", sessionId);
 
-      const session = await loadSession(sessionId);
+      const session = loadSession(sessionId);
       if (!session) {
         throw new Error(`REPL session not found: ${sessionId}`);
       }
 
-      await updateSessionStatus(sessionId, "completed");
+      updateSessionStatus(sessionId, "completed");
       Metrics.sessionEnded();
       log("info", "REPL session marked as completed", { sessionId });
     },
@@ -514,12 +519,12 @@ export async function markREPLError(sessionId: string): Promise<void> {
     async (span) => {
       span.setAttribute("repl.session_id", sessionId);
 
-      const session = await loadSession(sessionId);
+      const session = loadSession(sessionId);
       if (!session) {
         throw new Error(`REPL session not found: ${sessionId}`);
       }
 
-      await updateSessionStatus(sessionId, "error");
+      updateSessionStatus(sessionId, "error");
       Metrics.sessionEnded();
       log("warn", "REPL session marked as error", { sessionId });
     },
@@ -540,6 +545,5 @@ export async function markREPLError(sessionId: string): Promise<void> {
 export async function getSessionByWindow(
   tmuxWindow: number
 ): Promise<string | null> {
-  const redis = getRedisClient();
-  return redis.get(replByWindowKey(tmuxWindow));
+  return getSessionIdByWindow(tmuxWindow);
 }
