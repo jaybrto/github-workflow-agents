@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-REGISTRY="registry.k3s.bto.bar"
+REGISTRY="registry.bto.bar"
 ORG="jaybrto"
 IMAGE="github-workflow-agents"
 FULL_IMAGE="${REGISTRY}/${ORG}/${IMAGE}"

@@ -8,7 +8,7 @@ repo:
   name: ""
 
 image:
-  registry: registry.k3s.bto.bar
+  registry: registry.bto.bar
   repository: jaybrto/github-workflow-agents
   tag: latest
   pullPolicy: Always

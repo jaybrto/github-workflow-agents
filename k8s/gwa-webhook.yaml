@@ -24,7 +24,7 @@ spec:
         - name: gitea-registry-secret
       containers:
         - name: webhook
-          image: registry.k3s.bto.bar/jaybrto/gwa-webhook:latest
+          image: registry.bto.bar/jaybrto/gwa-webhook:latest
           imagePullPolicy: Always
           ports:
             - name: http

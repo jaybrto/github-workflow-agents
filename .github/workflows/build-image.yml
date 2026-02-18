@@ -89,7 +89,7 @@ jobs:
     if: needs.changes.outputs.runner == 'true'
     runs-on: self-hosted
     env:
-      IMAGE: registry.k3s.bto.bar/jaybrto/github-workflow-agents
+      IMAGE: registry.bto.bar/jaybrto/github-workflow-agents
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -121,7 +121,7 @@ jobs:
                   - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
                   - "--cache=true"
                   - "--cache-repo=${{ env.IMAGE }}/cache"
-                  - "--insecure-registry=registry.k3s.bto.bar"
+                  - "--skip-tls-verify-registry=registry.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
@@ -165,7 +165,7 @@ jobs:
     if: needs.changes.outputs.orchestrator == 'true'
     runs-on: self-hosted
     env:
-      IMAGE: registry.k3s.bto.bar/jaybrto/gwa-orchestrator
+      IMAGE: registry.bto.bar/jaybrto/gwa-orchestrator
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -197,7 +197,7 @@ jobs:
                   - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
                   - "--cache=true"
                   - "--cache-repo=${{ env.IMAGE }}/cache"
-                  - "--insecure-registry=registry.k3s.bto.bar"
+                  - "--skip-tls-verify-registry=registry.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
@@ -241,7 +241,7 @@ jobs:
     if: needs.changes.outputs.webhook == 'true'
     runs-on: self-hosted
     env:
-      IMAGE: registry.k3s.bto.bar/jaybrto/gwa-webhook
+      IMAGE: registry.bto.bar/jaybrto/gwa-webhook
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -273,7 +273,7 @@ jobs:
                   - "--destination=${{ env.IMAGE }}:${{ steps.meta.outputs.timestamp }}"
                   - "--cache=true"
                   - "--cache-repo=${{ env.IMAGE }}/cache"
-                  - "--insecure-registry=registry.k3s.bto.bar"
+                  - "--skip-tls-verify-registry=registry.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker

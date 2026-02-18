@@ -23,7 +23,7 @@ spec:
         - name: gitea-registry-secret
       containers:
         - name: orchestrator
-          image: registry.k3s.bto.bar/jaybrto/gwa-orchestrator:latest
+          image: registry.bto.bar/jaybrto/gwa-orchestrator:latest
           imagePullPolicy: Always
           ports:
             - name: http
