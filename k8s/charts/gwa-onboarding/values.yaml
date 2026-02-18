@@ -16,7 +16,7 @@ projectNumber: null
 
 # Container image
 image:
-  repository: ghcr.io/jaybrto/github-workflow-agents
+  repository: registry.k3s.bto.bar/jaybrto/github-workflow-agents
   tag: latest
   pullPolicy: Always
 

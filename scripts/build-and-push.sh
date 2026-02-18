@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-REGISTRY="ghcr.io"
+REGISTRY="registry.k3s.bto.bar"
 ORG="jaybrto"
 IMAGE="github-workflow-agents"
 FULL_IMAGE="${REGISTRY}/${ORG}/${IMAGE}"
@@ -13,7 +13,7 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 echo "[GWA Build] Building ${FULL_IMAGE}"
 echo "[GWA Build] Tags: latest, ${GIT_SHA}, ${TIMESTAMP}"
 
-# Ensure logged in to ghcr.io
+# Ensure logged in to registry
 if ! docker login "${REGISTRY}" --username "${ORG}" 2>/dev/null; then
     echo "[GWA Build] Not logged in to ${REGISTRY}"
     echo "[GWA Build] Run: echo \$GITHUB_TOKEN | docker login ${REGISTRY} -u ${ORG} --password-stdin"

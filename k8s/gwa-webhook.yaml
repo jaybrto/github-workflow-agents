@@ -21,10 +21,10 @@ spec:
         component: webhook
     spec:
       imagePullSecrets:
-        - name: ghcr-pull-secret
+        - name: gitea-registry-secret
       containers:
         - name: webhook
-          image: ghcr.io/jaybrto/gwa-webhook:latest
+          image: registry.k3s.bto.bar/jaybrto/gwa-webhook:latest
           imagePullPolicy: Always
           ports:
             - name: http

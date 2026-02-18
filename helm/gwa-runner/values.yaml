@@ -8,13 +8,13 @@ repo:
   name: ""
 
 image:
-  registry: ghcr.io
+  registry: registry.k3s.bto.bar
   repository: jaybrto/github-workflow-agents
   tag: latest
   pullPolicy: Always
 
 imagePullSecrets:
-  - name: ghcr-secret
+  - name: gitea-registry-secret
 
 # RabbitMQ configuration (Wave 3)
 rabbitmq:

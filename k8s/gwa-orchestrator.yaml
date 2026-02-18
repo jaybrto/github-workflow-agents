@@ -20,10 +20,10 @@ spec:
         component: orchestrator
     spec:
       imagePullSecrets:
-        - name: ghcr-pull-secret
+        - name: gitea-registry-secret
       containers:
         - name: orchestrator
-          image: ghcr.io/jaybrto/gwa-orchestrator:latest
+          image: registry.k3s.bto.bar/jaybrto/gwa-orchestrator:latest
           imagePullPolicy: Always
           ports:
             - name: http

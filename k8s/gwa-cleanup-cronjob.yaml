@@ -30,7 +30,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: cleanup
-              image: ghcr.io/jaybrto/github-workflow-agents:latest
+              image: registry.k3s.bto.bar/jaybrto/github-workflow-agents:latest
               command:
                 - gwa-cleanup
               args:

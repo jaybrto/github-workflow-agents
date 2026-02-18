@@ -89,7 +89,7 @@ jobs:
     if: needs.changes.outputs.runner == 'true'
     runs-on: self-hosted
     env:
-      IMAGE: ghcr.io/jaybrto/github-workflow-agents
+      IMAGE: registry.k3s.bto.bar/jaybrto/github-workflow-agents
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -127,7 +127,7 @@ jobs:
             volumes:
               - name: docker-config
                 secret:
-                  secretName: ghcr-push-secret
+                  secretName: gitea-registry-secret
                   items:
                     - key: .dockerconfigjson
                       path: config.json
@@ -164,7 +164,7 @@ jobs:
     if: needs.changes.outputs.orchestrator == 'true'
     runs-on: self-hosted
     env:
-      IMAGE: ghcr.io/jaybrto/gwa-orchestrator
+      IMAGE: registry.k3s.bto.bar/jaybrto/gwa-orchestrator
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -202,7 +202,7 @@ jobs:
             volumes:
               - name: docker-config
                 secret:
-                  secretName: ghcr-push-secret
+                  secretName: gitea-registry-secret
                   items:
                     - key: .dockerconfigjson
                       path: config.json
@@ -239,7 +239,7 @@ jobs:
     if: needs.changes.outputs.webhook == 'true'
     runs-on: self-hosted
     env:
-      IMAGE: ghcr.io/jaybrto/gwa-webhook
+      IMAGE: registry.k3s.bto.bar/jaybrto/gwa-webhook
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -277,7 +277,7 @@ jobs:
             volumes:
               - name: docker-config
                 secret:
-                  secretName: ghcr-push-secret
+                  secretName: gitea-registry-secret
                   items:
                     - key: .dockerconfigjson
                       path: config.json

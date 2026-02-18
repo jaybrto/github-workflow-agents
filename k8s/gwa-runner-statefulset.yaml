@@ -22,7 +22,7 @@ spec:
     spec:
       terminationGracePeriodSeconds: 30
       imagePullSecrets:
-        - name: ghcr-secret
+        - name: gitea-registry-secret
       securityContext:
         fsGroup: 1000
       initContainers:
@@ -44,7 +44,7 @@ spec:
               mountPath: /home/runner/repo
       containers:
         - name: gwa-agent
-          image: ghcr.io/jaybrto/github-workflow-agents:latest
+          image: registry.k3s.bto.bar/jaybrto/github-workflow-agents:latest
           imagePullPolicy: Always
           command: ["/bin/bash", "/scripts/entrypoint.sh"]
           ports:
