@@ -11,6 +11,8 @@ import { withSpan, shutdown as shutdownTelemetry, log } from "../lib/telemetry.j
 import * as tmux from "../lib/tmux.js";
 import * as db from "../lib/db.js";
 import { restoreActor, persistSnapshot, getStateName, canTransition } from "../lib/state-machine.js";
+import { preloadClaudeConfig } from "../lib/claude.js";
+import { handleDialogIfPresent } from "../lib/dialog-handler.js";
 
 const WORKTREES_PATH = "/home/runner/worktrees";
 
@@ -112,11 +114,17 @@ async function resumeWithFailures(issueNumber: number): Promise<void> {
     windowNum = await tmux.createWindow(sessionId, worktreePath);
     db.updateSessionStatus(sessionId, "running", { tmux_window: windowNum });
 
+    // Pre-load Claude config to prevent first-run dialogs
+    preloadClaudeConfig();
+
     // Start Claude REPL with resume
     await tmux.sendCommand(windowNum, "claude --dangerously-skip-permissions --resume");
 
     // Wait for REPL to initialize
     await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // Check for interactive dialogs blocking Claude startup
+    await handleDialogIfPresent(windowNum!);
   }
 
   // 4. Get failure details from Playwright report

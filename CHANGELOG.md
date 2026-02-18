@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.1.0] - 2026-02-17
+
+### Added
+- Haiku-powered dialog handler (`src/lib/dialog-handler.ts`) that auto-detects and dismisses interactive TUI dialogs blocking Claude Code CLI startup in tmux windows
+- `ClaudeDialogError` for unrecoverable dialog failures with captured terminal output
+- `parseDialogResponse` helper for validating Haiku JSON responses with key whitelisting
+- Dialog check integrated into all 3 tmux callsites: `repl-session.ts`, `start-planning.ts`, `resume-with-failures.ts`
+- `postDialogStuckComment` in orchestrator for GitHub PR notification on dialog failures
+- Known-pattern fast path for common dialogs (bypass permissions, trust project) — no API call needed
+- `preloadClaudeConfig()` in `claude.ts` — writes credentials, account metadata, and settings files before Claude starts to prevent first-run dialogs (theme, auth method, onboarding, account selection)
+- OAuth account metadata support via env vars (`CLAUDE_OAUTH_ACCOUNT_UUID`, `CLAUDE_OAUTH_EMAIL`, `CLAUDE_OAUTH_ORG_UUID`)
+- Vault + External Secrets Operator integration (`k8s/vault-external-secrets.yaml`) for auto-rotating secrets
+- Setup guide for Vault + ESO (`.claude/commands/setup-vault-eso.md`)
+- 16 unit tests for dialog handler (`src/tests/dialog-handler.test.ts`)
+
 ## [4.0.0] - 2026-02-17
 
 ### Added

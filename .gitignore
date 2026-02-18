@@ -146,3 +146,6 @@ Thumbs.db
 
 # Planning prompts (local only, replaced per phase)
 PLAN_PROMPT.md
+
+# Git worktrees
+.worktrees/
