@@ -128,6 +128,7 @@ jobs:
                   - "--cache=true"
                   - "--cache-repo=${DEST}/cache"
                   - "--insecure-registry=${{ env.REGISTRY }}"
+                  - "--skip-tls-verify-registry=gitea.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
@@ -205,6 +206,7 @@ jobs:
                   - "--cache=true"
                   - "--cache-repo=${DEST}/cache"
                   - "--insecure-registry=${{ env.REGISTRY }}"
+                  - "--skip-tls-verify-registry=gitea.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
@@ -282,6 +284,7 @@ jobs:
                   - "--cache=true"
                   - "--cache-repo=${DEST}/cache"
                   - "--insecure-registry=${{ env.REGISTRY }}"
+                  - "--skip-tls-verify-registry=gitea.k3s.bto.bar"
                 volumeMounts:
                   - name: docker-config
                     mountPath: /kaniko/.docker
