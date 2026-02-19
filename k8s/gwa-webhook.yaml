@@ -20,6 +20,21 @@ spec:
         app: github-workflow-agents
         component: webhook
     spec:
+      # Exclude nodes with known containerd/cgroup issues that prevent image pulls:
+      # - lenovomini: systemd cgroup issue causes ContainerCreating hang
+      # - dellmini2: containerd DNS fails to resolve gitea-http.gitea-system.svc.cluster.local
+      # - dellmini3: same containerd DNS issue as dellmini2
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - dellmini2
+                      - dellmini3
+                      - lenovomini
       imagePullSecrets:
         - name: gitea-registry-secret
       containers:

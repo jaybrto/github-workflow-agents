@@ -19,7 +19,7 @@ spec:
         component: cleanup
     spec:
       backoffLimit: 2
-      activeDeadlineSeconds: 300
+      activeDeadlineSeconds: 600
       template:
         metadata:
           labels:
@@ -28,6 +28,21 @@ spec:
         spec:
           serviceAccountName: gwa-cleanup
           restartPolicy: OnFailure
+          # Exclude nodes with known containerd/cgroup issues that prevent image pulls:
+          # - lenovomini: systemd cgroup issue causes ContainerCreating hang
+          # - dellmini2: containerd DNS fails to resolve gitea-http.gitea-system.svc.cluster.local
+          # - dellmini3: same containerd DNS issue as dellmini2
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: NotIn
+                        values:
+                          - dellmini2
+                          - dellmini3
+                          - lenovomini
           containers:
             - name: cleanup
               image: registry.bto.bar/jaybrto/github-workflow-agents:latest
@@ -36,14 +51,18 @@ spec:
               args:
                 - "--repo"
                 - "jaybrto/github-workflow-agents"
-                - "--pod"
-                - "gwa-runner-0"
               env:
                 - name: GITHUB_TOKEN
                   valueFrom:
                     secretKeyRef:
                       name: gwa-secrets
                       key: github-token
+                - name: DB_PATH
+                  value: "/tmp/cleanup.db"
+                - name: DISABLE_METRICS_EXPORT
+                  value: "true"
+                - name: OTEL_SDK_DISABLED
+                  value: "true"
               resources:
                 requests:
                   memory: "128Mi"
