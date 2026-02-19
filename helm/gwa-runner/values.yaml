@@ -29,6 +29,8 @@ ntfy:
 minio:
   endpoint: "minio.default.svc.cluster.local:9000"
   bucket: "gwa-recordings"
+  region: "us-east-1"
+  useSSL: "false"
 
 # Database configuration
 database:
@@ -150,6 +152,9 @@ secrets:
   name: gwa-secrets
   claudeOauthTokenKey: claude-oauth-token
   githubTokenKey: github-token
+  rabbitmqUrlKey: rabbitmq-url
+  minioAccessKeyKey: minio-access-key
+  minioSecretKeyKey: minio-secret-key
   # Optional: Pre-cached Claude credentials (created via browser auth once)
   # Create with: kubectl create secret generic claude-credentials --from-file=credentials.json=.credentials.json
   claudeCredentialsSecret: claude-credentials

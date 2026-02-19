@@ -157,12 +157,13 @@ describe("Helm Chart: gwa-runner", () => {
       expect(redisPort).toBeUndefined();
     });
 
-    // TODO: Add RabbitMQ env var assertion once AMQP backbone is implemented
-    // test("sets RabbitMQ environment variables", () => {
-    //   const container = statefulSet.spec.template.spec.containers[0];
-    //   const rabbitmqUrl = container.env.find((e: any) => e.name === "RABBITMQ_URL");
-    //   expect(rabbitmqUrl).toBeDefined();
-    // });
+    test("sets RABBITMQ_URL env var from secret", () => {
+      const container = statefulSet.spec.template.spec.containers[0];
+      const rabbitmqUrl = container.env.find((e: any) => e.name === "RABBITMQ_URL");
+      expect(rabbitmqUrl).toBeDefined();
+      expect(rabbitmqUrl.valueFrom?.secretKeyRef?.key).toBe("rabbitmq-url");
+      expect(rabbitmqUrl.valueFrom?.secretKeyRef?.name).toBe("gwa-secrets");
+    });
 
     test("sets OpenTelemetry environment variables", () => {
       const container = statefulSet.spec.template.spec.containers[0];
