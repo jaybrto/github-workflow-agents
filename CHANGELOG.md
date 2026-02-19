@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.2] - 2026-02-18
+
+### Added
+- In-repo E2E test harness (`src/tests/e2e/`) that drives the XState session lifecycle through all 7 states without requiring a live cluster
+- `src/tests/e2e/helpers.ts`: `createTestDb()` (in-memory SQLite with full schema), `createTestActor()` (fresh idle actor), `actorInState()` (actor pre-positioned in any state), `sendAndExpect()` (event dispatch + state assertion)
+- `src/tests/e2e/full-lifecycle.test.ts`: 10 tests covering the complete happy path (idle→planning→inProgress→qa→review→done), blocked/resume with guard verification, actor isolation via `beforeEach`, and schema loading validation
+
 ## [4.1.1] - 2026-02-18
 
 ### Fixed
