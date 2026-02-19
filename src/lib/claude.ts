@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import type { ClaudeStreamEvent } from "./types.js";
 import { withSpan, Metrics, log } from "./telemetry.js";
@@ -112,18 +112,22 @@ export function preloadClaudeConfig(): void {
       });
       syncConfigFromCredentials();
     } else {
-      let credsChanged = false;
-
-      // Set/update OAuth token
-      if (existingCreds.oauthToken !== oauthToken) {
-        existingCreds.oauthToken = oauthToken;
-        credsChanged = true;
-      }
+      // Write claudeAiOauth format (required by Claude Code 2.1.45+ TUI).
+      // The old `oauthToken` top-level field only works in --print (headless) mode.
+      // For new pods without real credentials yet, write the minimal structure so
+      // the TUI can start. expiresAt = now + 8h (typical access token lifetime).
+      const eightHoursMs = 8 * 60 * 60 * 1000;
+      const newCreds: Record<string, unknown> = {
+        claudeAiOauth: {
+          accessToken: oauthToken,
+          expiresAt: Date.now() + eightHoursMs,
+        },
+      };
 
       // Set oauthAccount from env vars (prevents account selection dialog)
       const accountUuid = process.env.CLAUDE_OAUTH_ACCOUNT_UUID;
-      if (accountUuid && !existingCreds.oauthAccount) {
-        existingCreds.oauthAccount = {
+      if (accountUuid) {
+        newCreds.oauthAccount = {
           accountUuid,
           emailAddress: process.env.CLAUDE_OAUTH_EMAIL || "",
           organizationUuid: process.env.CLAUDE_OAUTH_ORG_UUID || "",
@@ -131,17 +135,14 @@ export function preloadClaudeConfig(): void {
           billingType: process.env.CLAUDE_OAUTH_BILLING_TYPE || "stripe_subscription",
           displayName: process.env.CLAUDE_OAUTH_DISPLAY_NAME || "GWA",
         };
-        credsChanged = true;
       }
 
-      if (credsChanged) {
-        writeFileSync(
-          credentialsPath,
-          JSON.stringify(existingCreds, null, 2),
-          { mode: 0o600 }
-        );
-        log("info", "Wrote Claude credentials file", { path: credentialsPath });
-      }
+      writeFileSync(
+        credentialsPath,
+        JSON.stringify(newCreds, null, 2),
+        { mode: 0o600 }
+      );
+      log("info", "Wrote claudeAiOauth credentials file for new pod", { path: credentialsPath });
 
       // Sync ephemeral ~/.config/claude/config.json from the credentials we just wrote
       syncConfigFromCredentials();

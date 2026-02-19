@@ -1,5 +1,30 @@
 # Changelog
 
+## [4.3.0] - 2026-02-19
+
+### Added
+
+- Multi-pod credential backup/restore system (`src/lib/credentials-manager.ts`) that tars `~/.claude/.credentials.json` + `~/.claude.json` and uploads to MinIO
+  - Per-pod backup path: `s3://gwa-recordings/claude-auth/pods/<POD_NAME>/credentials.tar.gz`
+  - Legacy fallback path: `s3://gwa-recordings/claude-auth/credentials.tar.gz`
+  - `restoreCredentialsIfMissing()`: on new pod startup, cascades through own pod → other pods → legacy path
+  - `syncConfigFromCredentials()`: recreates ephemeral `~/.config/claude/config.json` from PVC-backed credentials on every pod start
+- `src/credentials-backup.ts` — standalone binary entry point for the backup CronJob
+- `k8s/gwa-credentials-backup-cronjob.yaml` — runs every 6 hours, mounts `claude-session-gwa-runner-0` PVC, backs up Claude credentials to MinIO
+- `k8s/gwa-runner-configmap.yaml` — entrypoint now calls `syncConfigFromCredentials` on every pod start to reconstruct ephemeral config from PVC-backed credentials
+- `dialog-handler.ts`: added `Choose text style` (theme selection) dialog to `KNOWN_DIALOGS` fast-path
+
+### Fixed
+
+- `preloadClaudeConfig()` in `claude.ts`: now writes `claudeAiOauth` format (`{ claudeAiOauth: { accessToken, expiresAt } }`) for new pods instead of legacy `oauthToken` top-level field — required by Claude Code 2.1.45+ TUI mode. Does not overwrite existing `claudeAiOauth` credentials.
+- `preloadClaudeConfig()`: removed unused `chmodSync` import
+
+### Infrastructure
+
+- `gwa-runner-0` pod fully authenticated via PVC-backed credentials (`claudeAiOauth` format with `refreshToken`)
+- Credentials backed up to MinIO at session start and via 6-hour CronJob
+- Pod startup sequence: restore credentials → sync config → launch runner
+
 ## [4.2.0] - 2026-02-18
 
 ### Added
