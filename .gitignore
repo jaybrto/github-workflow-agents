@@ -147,5 +147,8 @@ Thumbs.db
 # Planning prompts (local only, replaced per phase)
 PLAN_PROMPT.md
 
+# Design and planning docs (may contain local infra values)
+docs/plans/
+
 # Git worktrees
 .worktrees/
