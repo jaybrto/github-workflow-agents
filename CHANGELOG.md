@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.3.2] - 2026-02-19
+
+### Added
+
+- `src/transitions/resume-with-failures.ts`: proactive OAuth token expiry check before Claude REPL start with MinIO credential recovery; `capturePane` + `detectAuthFailure` check after REPL initialization to detect auth screen; `ClaudeAuthError` handling in `main()` catch block with best-effort GitHub issue comment; `ClaudeAuthError` and `detectAuthFailure` imports from `../lib/claude.js`; `isCredentialExpired` and `tryRecoverCredentials` imports from `../lib/credentials-manager.js`; `getOctokit` import from `../lib/github.js`
+
 ## [4.3.1] - 2026-02-19
 
 ### Fixed
