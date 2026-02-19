@@ -23,7 +23,6 @@ import { isCredentialExpired, tryRecoverCredentials } from "../lib/credentials-m
 import { handleDialogIfPresent } from "../lib/dialog-handler.js";
 import { createSessionActor, persistSnapshot, getStateName } from "../lib/state-machine.js";
 import { startPaneStream } from "../lib/terminal-relay.js";
-import { SessionState } from "../shared/types.js";
 
 const WORKTREES_PATH = "/home/runner/worktrees";
 const REPO_PATH = "/home/runner/repo";
@@ -329,9 +328,8 @@ Use /handoff if you need to pause and resume later.`;
   // Start Claude REPL with reactive auth retry (max 2 attempts)
   const MAX_AUTH_RETRIES = 2;
   let authRetries = 0;
-  let claudeStarted = false;
 
-  while (!claudeStarted) {
+  while (true) {
     await tmux.sendCommand(windowNum, "claude --dangerously-skip-permissions");
 
     // Wait for REPL to initialize
@@ -339,14 +337,13 @@ Use /handoff if you need to pause and resume later.`;
 
     const paneOutput = await tmux.capturePane(windowNum, 30);
     if (!detectAuthFailure(paneOutput)) {
-      claudeStarted = true;
       // Check for interactive dialogs blocking Claude startup
       await handleDialogIfPresent(windowNum);
       break;
     }
 
     authRetries++;
-    if (authRetries > MAX_AUTH_RETRIES) {
+    if (authRetries >= MAX_AUTH_RETRIES) {
       throw new ClaudeAuthError(
         `Claude stuck on auth screen after ${MAX_AUTH_RETRIES} recovery attempts. ` +
         `Captured: ${paneOutput.slice(0, 300)}`
@@ -357,7 +354,7 @@ Use /handoff if you need to pause and resume later.`;
     db.logActivity(sessionId, "auth_recovery_start", { attempt: authRetries }, "system");
 
     // Kill stuck Claude in the window, restore credentials, retry
-    await tmux.sendKeys(windowNum, "q");
+    await tmux.sendKeys(windowNum, "C-c");
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     const recovered = await tryRecoverCredentials();
