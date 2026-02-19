@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.1.1] - 2026-02-18
+
+### Fixed
+- `createSession`, `createQuestion`, and `answerQuestion` now wrap their multi-step write operations in `db.transaction()` to ensure atomicity — if the activity_log insert fails, the parent insert is rolled back, preventing partial writes under concurrent load
+
+### Added
+- `sequential writes maintain data integrity` test: verifies 10 sequential session inserts all land correctly
+- `transaction rolls back on error, leaving no partial writes` test: verifies that a failing transaction leaves no rows behind
+
 ## [4.1.0] - 2026-02-17
 
 ### Added

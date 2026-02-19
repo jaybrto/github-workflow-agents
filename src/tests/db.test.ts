@@ -177,4 +177,49 @@ describe("Database Schema", () => {
     expect(indexNames).toContain("idx_agent_tasks_session");
     expect(indexNames).toContain("idx_activity_session");
   });
+
+  test("sequential writes maintain data integrity", () => {
+    const sessionIds = Array.from({ length: 10 }, (_, i) => `sess-integrity-${i}`);
+
+    for (const id of sessionIds) {
+      db.run(
+        `INSERT INTO sessions (id, type, status, github_number, github_type, repo, branch, base_branch)
+         VALUES (?, 'feature', 'running', ?, 'issue', 'owner/repo', 'feat/test', 'main')`,
+        [id, parseInt(id.split("-")[2])]
+      );
+    }
+
+    const count = db
+      .query(`SELECT COUNT(*) as n FROM sessions WHERE id LIKE 'sess-integrity-%'`)
+      .get() as { n: number };
+    expect(count.n).toBe(10);
+  });
+
+  test("transaction rolls back on error, leaving no partial writes", () => {
+    let threw = false;
+    try {
+      const tx = db.transaction(() => {
+        db.run(
+          `INSERT INTO sessions (id, type, status, github_number, github_type, repo)
+           VALUES (?, 'feature', 'running', 999, 'issue', 'owner/repo')`,
+          ["sess-rollback-1"]
+        );
+        // Force a constraint violation — duplicate primary key
+        db.run(
+          `INSERT INTO sessions (id, type, status, github_number, github_type, repo)
+           VALUES (?, 'feature', 'running', 999, 'issue', 'owner/repo')`,
+          ["sess-rollback-1"]
+        );
+      });
+      tx();
+    } catch {
+      threw = true;
+    }
+
+    expect(threw).toBe(true);
+    const row = db
+      .query(`SELECT id FROM sessions WHERE id = 'sess-rollback-1'`)
+      .get() as { id: string } | null;
+    expect(row).toBeNull();
+  });
 });

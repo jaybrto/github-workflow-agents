@@ -255,25 +255,30 @@ export function createSession(data: {
   project_item_id?: string;
 }): void {
   const db = getDatabase();
-  db.run(
-    `INSERT INTO sessions (id, type, github_number, github_type, repo, branch, base_branch, tmux_window, worktree_path, initial_prompt, project_item_id, last_activity_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())`,
-    [
-      data.id,
-      data.type,
-      data.github_number,
-      data.github_type,
-      data.repo,
-      data.branch || null,
-      data.base_branch || null,
-      data.tmux_window || null,
-      data.worktree_path || null,
-      data.initial_prompt || null,
-      data.project_item_id || null,
-    ]
-  );
-
-  logActivity(data.id, "session_created", { type: data.type }, "workflow");
+  const tx = db.transaction(() => {
+    db.run(
+      `INSERT INTO sessions (id, type, github_number, github_type, repo, branch, base_branch, tmux_window, worktree_path, initial_prompt, project_item_id, last_activity_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())`,
+      [
+        data.id,
+        data.type,
+        data.github_number,
+        data.github_type,
+        data.repo,
+        data.branch || null,
+        data.base_branch || null,
+        data.tmux_window || null,
+        data.worktree_path || null,
+        data.initial_prompt || null,
+        data.project_item_id || null,
+      ]
+    );
+    db.run(
+      `INSERT INTO activity_log (session_id, event, details, actor) VALUES (?, ?, ?, ?)`,
+      [data.id, "session_created", JSON.stringify({ type: data.type }), "workflow"]
+    );
+  });
+  tx();
 }
 
 export function updateSessionStatus(
@@ -344,15 +349,21 @@ export function createQuestion(data: {
   screenshot_path?: string;
 }): number {
   const db = getDatabase();
-  const result = db.run(
-    `INSERT INTO questions (session_id, question, question_context, screenshot_path)
-     VALUES (?, ?, ?, ?)`,
-    [data.session_id, data.question, data.question_context || null, data.screenshot_path || null]
-  );
-
-  logActivity(data.session_id, "question_asked", { question: data.question.substring(0, 200) }, "claude");
-
-  return Number(result.lastInsertRowid);
+  let lastId = 0;
+  const tx = db.transaction(() => {
+    const result = db.run(
+      `INSERT INTO questions (session_id, question, question_context, screenshot_path)
+       VALUES (?, ?, ?, ?)`,
+      [data.session_id, data.question, data.question_context || null, data.screenshot_path || null]
+    );
+    lastId = Number(result.lastInsertRowid);
+    db.run(
+      `INSERT INTO activity_log (session_id, event, details, actor) VALUES (?, ?, ?, ?)`,
+      [data.session_id, "question_asked", JSON.stringify({ question: data.question.substring(0, 200) }), "claude"]
+    );
+  });
+  tx();
+  return lastId;
 }
 
 export function updateQuestionPosted(questionId: number, githubCommentId: number): void {
@@ -365,19 +376,25 @@ export function updateQuestionPosted(questionId: number, githubCommentId: number
 
 export function answerQuestion(questionId: number, answer: string, answeredBy: string): void {
   const db = getDatabase();
-  db.run(
-    `UPDATE questions SET status = 'answered', answer = ?, answered_by = ?, answered_at = unixepoch() WHERE id = ?`,
-    [answer, answeredBy, questionId]
-  );
+  const tx = db.transaction(() => {
+    db.run(
+      `UPDATE questions SET status = 'answered', answer = ?, answered_by = ?, answered_at = unixepoch() WHERE id = ?`,
+      [answer, answeredBy, questionId]
+    );
 
-  // Get session ID for logging
-  const question = db.query(`SELECT session_id FROM questions WHERE id = ?`).get(questionId) as {
-    session_id: string;
-  } | null;
+    // Get session ID for logging (inside transaction so it sees the updated row)
+    const question = db.query(`SELECT session_id FROM questions WHERE id = ?`).get(questionId) as {
+      session_id: string;
+    } | null;
 
-  if (question) {
-    logActivity(question.session_id, "question_answered", { answeredBy }, answeredBy);
-  }
+    if (question) {
+      db.run(
+        `INSERT INTO activity_log (session_id, event, details, actor) VALUES (?, ?, ?, ?)`,
+        [question.session_id, "question_answered", JSON.stringify({ answeredBy }), answeredBy]
+      );
+    }
+  });
+  tx();
 }
 
 export function getPendingQuestion(sessionId: string): Question | null {
