@@ -15,6 +15,8 @@ spec:
           # Initial entry for this repository
           - repoOwner: jaybrto
             repoName: github-workflow-agents
+          - repoOwner: jaybrto
+            repoName: gwa-test-target
           # Add more repos here:
           # - repoOwner: jaybrto
           #   repoName: my-other-repo
