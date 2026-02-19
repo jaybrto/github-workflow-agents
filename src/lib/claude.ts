@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from "f
 import { join } from "path";
 import type { ClaudeStreamEvent } from "./types.js";
 import { withSpan, Metrics, log } from "./telemetry.js";
+import { syncConfigFromCredentials } from "./credentials-manager.js";
 
 // ============================================================================
 // AUTH FAILURE DETECTION
@@ -102,35 +103,48 @@ export function preloadClaudeConfig(): void {
       }
     }
 
-    let credsChanged = false;
+    // If real OAuth credentials exist (claudeAiOauth format from TUI login),
+    // don't overwrite — the real credentials have refresh token and expiry info.
+    // Just sync the ephemeral config from the existing credentials.
+    if (existingCreds.claudeAiOauth) {
+      log("info", "Real OAuth credentials present, skipping env-var overwrite", {
+        path: credentialsPath,
+      });
+      syncConfigFromCredentials();
+    } else {
+      let credsChanged = false;
 
-    // Set/update OAuth token
-    if (existingCreds.oauthToken !== oauthToken) {
-      existingCreds.oauthToken = oauthToken;
-      credsChanged = true;
-    }
+      // Set/update OAuth token
+      if (existingCreds.oauthToken !== oauthToken) {
+        existingCreds.oauthToken = oauthToken;
+        credsChanged = true;
+      }
 
-    // Set oauthAccount from env vars (prevents account selection dialog)
-    const accountUuid = process.env.CLAUDE_OAUTH_ACCOUNT_UUID;
-    if (accountUuid && !existingCreds.oauthAccount) {
-      existingCreds.oauthAccount = {
-        accountUuid,
-        emailAddress: process.env.CLAUDE_OAUTH_EMAIL || "",
-        organizationUuid: process.env.CLAUDE_OAUTH_ORG_UUID || "",
-        hasExtraUsageEnabled: process.env.CLAUDE_OAUTH_EXTRA_USAGE !== "false",
-        billingType: process.env.CLAUDE_OAUTH_BILLING_TYPE || "stripe_subscription",
-        displayName: process.env.CLAUDE_OAUTH_DISPLAY_NAME || "GWA",
-      };
-      credsChanged = true;
-    }
+      // Set oauthAccount from env vars (prevents account selection dialog)
+      const accountUuid = process.env.CLAUDE_OAUTH_ACCOUNT_UUID;
+      if (accountUuid && !existingCreds.oauthAccount) {
+        existingCreds.oauthAccount = {
+          accountUuid,
+          emailAddress: process.env.CLAUDE_OAUTH_EMAIL || "",
+          organizationUuid: process.env.CLAUDE_OAUTH_ORG_UUID || "",
+          hasExtraUsageEnabled: process.env.CLAUDE_OAUTH_EXTRA_USAGE !== "false",
+          billingType: process.env.CLAUDE_OAUTH_BILLING_TYPE || "stripe_subscription",
+          displayName: process.env.CLAUDE_OAUTH_DISPLAY_NAME || "GWA",
+        };
+        credsChanged = true;
+      }
 
-    if (credsChanged) {
-      writeFileSync(
-        credentialsPath,
-        JSON.stringify(existingCreds, null, 2),
-        { mode: 0o600 }
-      );
-      log("info", "Wrote Claude credentials file", { path: credentialsPath });
+      if (credsChanged) {
+        writeFileSync(
+          credentialsPath,
+          JSON.stringify(existingCreds, null, 2),
+          { mode: 0o600 }
+        );
+        log("info", "Wrote Claude credentials file", { path: credentialsPath });
+      }
+
+      // Sync ephemeral ~/.config/claude/config.json from the credentials we just wrote
+      syncConfigFromCredentials();
     }
   }
 

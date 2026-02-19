@@ -56,6 +56,11 @@ const KNOWN_DIALOGS: Array<{
     keys: ["Enter"],
     reason: "Trusting project directory",
   },
+  {
+    pattern: /Choose the text style|text style that looks best|Dark mode.*Light mode/i,
+    keys: ["Enter"],
+    reason: "Selecting default theme (dark mode)",
+  },
 ];
 
 const SYSTEM_PROMPT = `You are monitoring a terminal where Claude Code CLI is starting up.

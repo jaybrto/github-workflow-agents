@@ -66,6 +66,25 @@ data:
       sqlite3 "${DB_PATH}" < "${SCHEMA_PATH}"
     fi
 
+    # Sync Claude config from credentials (run on every start - ~/.config/claude/ is ephemeral)
+    # This recreates ~/.config/claude/config.json from the persistent ~/.claude/.credentials.json
+    if [ -f "/home/runner/.claude/.credentials.json" ]; then
+      echo "[GWA] Syncing Claude config from credentials..."
+      node -e "
+const fs = require('fs'), path = require('path');
+const HOME = '/home/runner';
+try {
+  const creds = JSON.parse(fs.readFileSync(HOME + '/.claude/.credentials.json', 'utf-8'));
+  const token = creds?.claudeAiOauth?.accessToken || creds?.oauthToken;
+  if (token) {
+    fs.mkdirSync(HOME + '/.config/claude', {recursive:true});
+    fs.writeFileSync(HOME + '/.config/claude/config.json', JSON.stringify({oauthToken: token}));
+    console.log('[GWA] Synced Claude config from credentials');
+  }
+} catch(e) { console.warn('[GWA] Config sync failed:', e.message); }
+      " 2>/dev/null || true
+    fi
+
     # Run startup recovery for interrupted sessions
     echo "[GWA] Running recovery for interrupted sessions..."
     if command -v gwa-recovery &> /dev/null; then
