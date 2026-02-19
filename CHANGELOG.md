@@ -1,5 +1,35 @@
 # Changelog
 
+## [4.2.0] - 2026-02-18
+
+### Added
+
+- ntfy.sh deployed to K3s cluster (`default` namespace) at `ntfy.bto.bar` for push notifications
+- MinIO bucket `gwa-recordings` created for asciicast recording storage
+- Vault `secret/data/gwa` updated with `rabbitmq-url`, `minio-access-key`, `minio-secret-key` keys
+- ExternalSecret syncs 3 new keys (`rabbitmq-url`, `minio-access-key`, `minio-secret-key`) into runner pod env
+- Helm chart: added `RABBITMQ_URL`, `NTFY_URL`, and MinIO env vars to runner StatefulSet template
+- Helm test: activated RabbitMQ env var assertion (previously TODO-commented)
+- In-repo E2E test harness (`src/tests/e2e/`) with 10 lifecycle tests driving the full XState session lifecycle without requiring a live cluster
+- Live test-target repo `jaybrto/gwa-test-target` (Bun counter app, onboarded to ArgoCD) for integration testing
+- E2E scripts: `scripts/create-test-target.sh`, `scripts/e2e-live-test.sh`
+- `project-sync.yml`: implemented all 7 previously TODO workflow handlers — Playwright, status-update, pause-for-question, request-retest, close-without-work, skip-qa, skip-implementation
+- `preflight.test.ts`: added `amqplib` dependency assertion to preflight checks
+
+### Fixed
+
+- gwa-cleanup CronJob: fixed `DeadlineExceeded` by increasing timeout to 600s, disabling OTEL, removing invalid `--pod` arg, and adding `nodeAffinity`
+- gwa-webhook: force-deleted stuck `ContainerCreating` pod (lenovomini cgroup issue), added `nodeAffinity` to prevent recurrence
+- `ntfy.yaml` and `gwa-cleanup-cronjob.yaml`: added `nodeAffinity` excluding dellmini2/lenovomini nodes with explanatory comments
+- Stale artifacts removed: `dist/gwa-debug-redis` binary and extraneous `ioredis` dependency pruned
+
+### Infrastructure
+
+- `RABBITMQ_URL`, `NTFY_URL`, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` wired into runner StatefulSet via Vault/ESO
+- Orchestrator: confirmed connected to live RabbitMQ (not stub)
+- RabbitMQ: `gwa.topic` exchange created by runner on startup
+- 353 tests pass, 0 fail across full test suite
+
 ## [4.1.2] - 2026-02-18
 
 ### Added
