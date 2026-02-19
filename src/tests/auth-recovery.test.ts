@@ -4,7 +4,7 @@
  *
  * Uses a temp HOME dir so tests never touch real ~/.claude/
  */
-import { describe, test, expect, beforeAll, afterEach } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
