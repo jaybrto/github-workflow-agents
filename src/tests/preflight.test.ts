@@ -118,6 +118,7 @@ describe("Pre-flight: Package.json Validation", () => {
     expect(deps["@anthropic-ai/sdk"]).toBeDefined();
     expect(deps["@opentelemetry/sdk-node"]).toBeDefined();
     expect(deps["xstate"]).toBeDefined();
+    expect(deps["amqplib"]).toBeDefined();
   });
 
   test("has build scripts for all entry points", () => {
