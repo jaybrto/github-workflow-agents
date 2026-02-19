@@ -24,7 +24,7 @@ spec:
       imagePullSecrets:
         - name: gitea-registry-secret
       securityContext:
-        fsGroup: 1000
+        fsGroup: 1001
       initContainers:
         - name: fix-permissions
           image: busybox
@@ -32,9 +32,9 @@ spec:
             - sh
             - -c
             - |
-              chown -R 1000:1000 /home/runner/.claude
-              chown -R 1000:1000 /home/runner/worktrees
-              chown -R 1000:1000 /home/runner/repo
+              chown -R 1001:1001 /home/runner/.claude
+              chown -R 1001:1001 /home/runner/worktrees
+              chown -R 1001:1001 /home/runner/repo
           volumeMounts:
             - name: claude-session
               mountPath: /home/runner/.claude

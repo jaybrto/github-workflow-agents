@@ -7,17 +7,18 @@ This guide documents the complete migration from GitHub Container Registry (GHCR
 1. [Architecture Overview](#architecture-overview)
 2. [Prerequisites](#prerequisites)
 3. [Understanding the Docker v2 Auth Flow](#understanding-the-docker-v2-auth-flow)
-4. [Step 1: Create Gitea Registry Credentials](#step-1-create-gitea-registry-credentials)
-5. [Step 2: Create K8s Secrets for Push and Pull](#step-2-create-k8s-secrets-for-push-and-pull)
-6. [Step 3: Deploy the TLS Auth Proxy](#step-3-deploy-the-tls-auth-proxy)
-7. [Step 4: Create Traefik HTTPS Ingress](#step-4-create-traefik-https-ingress)
-8. [Step 5: Configure K3s Node Registries](#step-5-configure-k3s-node-registries)
-9. [Step 6: Update K8s Manifests](#step-6-update-k8s-manifests)
-10. [Step 7: Update the CI Pipeline](#step-7-update-the-ci-pipeline)
-11. [Step 8: Update RBAC](#step-8-update-rbac)
-12. [Step 9: Verify Everything Works](#step-9-verify-everything-works)
-13. [Troubleshooting](#troubleshooting)
-14. [Key Gotchas and Lessons Learned](#key-gotchas-and-lessons-learned)
+4. [Step 1: Deploy the Self-Hosted Actions Runner](#step-1-deploy-the-self-hosted-actions-runner)
+5. [Step 2: Create Gitea Registry Credentials](#step-2-create-gitea-registry-credentials)
+6. [Step 3: Create K8s Secrets for Push and Pull](#step-3-create-k8s-secrets-for-push-and-pull)
+7. [Step 4: Deploy the TLS Auth Proxy](#step-4-deploy-the-tls-auth-proxy)
+8. [Step 5: Create Traefik HTTPS Ingress](#step-5-create-traefik-https-ingress)
+9. [Step 6: Configure K3s Node Registries](#step-6-configure-k3s-node-registries)
+10. [Step 7: Update K8s Manifests](#step-7-update-k8s-manifests)
+11. [Step 8: Update the CI Pipeline](#step-8-update-the-ci-pipeline)
+12. [Step 9: Update RBAC](#step-9-update-rbac)
+13. [Step 10: Verify Everything Works](#step-10-verify-everything-works)
+14. [Troubleshooting](#troubleshooting)
+15. [Key Gotchas and Lessons Learned](#key-gotchas-and-lessons-learned)
 
 ---
 
@@ -104,7 +105,181 @@ This is the critical piece that makes the entire migration complex. When a Docke
 
 ---
 
-## Step 1: Create Gitea Registry Credentials
+## Step 1: Deploy the Self-Hosted Actions Runner
+
+Before any of the registry setup matters, the CI pipeline needs a runner that lives inside your K3s cluster. GitHub-hosted runners cannot reach your internal Gitea service or your cluster DNS — that's the whole reason for the migration.
+
+The runner uses [`myoung34/github-runner`](https://github.com/myoung34/docker-github-actions-runner) (a production-ready, self-updating container) with an init container that installs `kubectl` so your workflow steps can directly manage K8s resources.
+
+### Prerequisites
+
+- A GitHub PAT (classic or fine-grained) with `repo` scope on the target repository stored in a K8s secret
+- The PAT must have permissions to register self-hosted runners (`Settings > Actions > Runners`)
+
+### Deploy the Runner
+
+```yaml
+# k8s/gwa-actions-runner.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gwa-actions-runner
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gwa-actions-runner
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gwa-actions-runner
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gwa-actions-runner
+subjects:
+  - kind: ServiceAccount
+    name: gwa-actions-runner
+    namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gwa-actions-runner
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gwa-actions-runner
+  template:
+    metadata:
+      labels:
+        app: gwa-actions-runner
+    spec:
+      serviceAccountName: gwa-actions-runner
+      # Init container installs kubectl so workflow steps can use it
+      initContainers:
+        - name: install-kubectl
+          image: bitnami/kubectl:latest
+          command:
+            - sh
+            - -c
+            - cp /opt/bitnami/kubectl/bin/kubectl /tools/kubectl && chmod +x /tools/kubectl
+          volumeMounts:
+            - name: tools
+              mountPath: /tools
+      containers:
+        - name: runner
+          image: myoung34/github-runner:latest
+          env:
+            - name: RUNNER_NAME_PREFIX
+              value: gwa
+            - name: RUNNER_WORKDIR
+              value: /tmp/runner/work
+            - name: REPO_URL
+              # Set to your repository URL
+              value: https://github.com/<ORG>/<REPO>
+            - name: ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: github-token
+            - name: LABELS
+              value: self-hosted,Linux,X64,gwa
+            - name: DISABLE_AUTO_UPDATE
+              value: "true"
+            - name: PATH
+              value: /tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: work
+              mountPath: /tmp/runner/work
+            - name: tools
+              mountPath: /tools
+      volumes:
+        - name: work
+          emptyDir: {}
+        - name: tools
+          emptyDir: {}
+```
+
+### Create the GitHub Token Secret
+
+```bash
+kubectl create secret generic gwa-secrets \
+  --from-literal=github-token=<YOUR_GITHUB_PAT> \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+> If you already have a `gwa-secrets` secret (e.g., from Vault/ESO), add `github-token` to it rather than creating a new secret.
+
+### Apply and Verify
+
+```bash
+kubectl apply -f k8s/gwa-actions-runner.yaml
+
+# Watch it register with GitHub
+kubectl logs -f deployment/gwa-actions-runner -c runner
+# Should show: "Runner successfully added"
+
+# Confirm in GitHub: Settings > Actions > Runners
+# Should show: gwa-<random> (idle, self-hosted, Linux, X64)
+```
+
+### Update Workflow to Use `runs-on: self-hosted`
+
+Change all jobs in your workflow:
+```yaml
+# Before (GitHub-hosted)
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+# After (self-hosted K3s runner)
+jobs:
+  build:
+    runs-on: self-hosted
+```
+
+Or use specific labels to target only your runner:
+```yaml
+runs-on: [self-hosted, Linux, X64, gwa]
+```
+
+---
+
+## Step 2: Create Gitea Registry Credentials
 
 In Gitea, create a dedicated user or generate an access token with registry push/pull permissions.
 
@@ -127,15 +302,17 @@ curl -sk -u "$GITEA_USERNAME:$GITEA_TOKEN" \
 
 ---
 
-## Step 2: Create K8s Secrets for Push and Pull
+## Step 3: Create K8s Secrets for Push and Pull
 
 ### Push Secret (used by Kaniko in CI pipeline)
 
-The push secret needs entries for both the internal push target AND the auth realm host:
+The push secret needs **three** entries: the internal Gitea push target, the Gitea auth realm host, and Docker Hub.
+
+Kaniko mounts this file as `/kaniko/.docker/config.json` and uses it for all registry interactions: Gitea entries handle push and auth token fetching; the Docker Hub entry handles `FROM` base image pulls and `--cache-repo` fetches during the build. Without Docker Hub auth, builds will start failing with `429 Too Many Requests` once you build frequently enough from the same node IP.
 
 ```bash
-# Build the dockerconfigjson with dual entries
-AUTH=$(echo -n "$GITEA_USERNAME:$GITEA_TOKEN" | base64)
+GITEA_AUTH=$(echo -n "$GITEA_USERNAME:$GITEA_TOKEN" | base64)
+DOCKERHUB_AUTH=$(echo -n "$DOCKER_HUB_USER:$DOCKER_HUB_TOKEN" | base64)
 INTERNAL_HOST="gitea-http.gitea-system.svc.cluster.local:3000"
 AUTH_HOST="gitea.k3s.bto.bar"
 
@@ -145,12 +322,17 @@ cat <<EOF > /tmp/push-config.json
     "$INTERNAL_HOST": {
       "username": "$GITEA_USERNAME",
       "password": "$GITEA_TOKEN",
-      "auth": "$AUTH"
+      "auth": "$GITEA_AUTH"
     },
     "$AUTH_HOST": {
       "username": "$GITEA_USERNAME",
       "password": "$GITEA_TOKEN",
-      "auth": "$AUTH"
+      "auth": "$GITEA_AUTH"
+    },
+    "https://index.docker.io/v1/": {
+      "username": "$DOCKER_HUB_USER",
+      "password": "$DOCKER_HUB_TOKEN",
+      "auth": "$DOCKERHUB_AUTH"
     }
   }
 }
@@ -163,6 +345,8 @@ kubectl create secret generic gitea-registry-push \
 
 rm /tmp/push-config.json
 ```
+
+> Use a Docker Hub **access token** (hub.docker.com → Account Settings → Security → New Access Token), not your password. `Public Repo Read-only` scope is sufficient for pulling base images.
 
 ### Pull Secret (used by K8s pods via imagePullSecrets)
 
@@ -186,9 +370,9 @@ vault kv put secret/gitea/registry \
 
 ---
 
-## Step 3: Deploy the TLS Auth Proxy
+## Step 4: Deploy the TLS Auth Proxy
 
-Kaniko runs inside K8s pods and needs to reach the auth token endpoint at `gitea.k3s.bto.bar:443`. Since Traefik's auto-generated cert doesn't match this hostname, we deploy an nginx proxy with a self-signed cert that Kaniko explicitly trusts.
+Kaniko runs inside K8s pods and needs to reach the auth token endpoint at `gitea.k3s.bto.bar:443`. Even with a valid Traefik ingress for that hostname, Kaniko's `--skip-tls-verify-registry` and `--insecure-registry` flags **do not apply to the auth token endpoint** — they only affect the push/pull registry operations. To give Kaniko a cert it will trust for the token endpoint, we deploy an nginx proxy with a self-signed cert and inject the CA via an init container + `SSL_CERT_FILE`.
 
 ### Generate Self-Signed Certificate
 
@@ -233,7 +417,9 @@ data:
       ssl_certificate /etc/nginx/tls/tls.crt;
       ssl_certificate_key /etc/nginx/tls/tls.key;
 
-      # CoreDNS resolver IP (find yours: kubectl get svc -n kube-system kube-dns)
+      # CoreDNS resolver IP - find yours:
+      # kubectl get svc kube-dns -n kube-system -o jsonpath='{.spec.clusterIP}'
+      # K3s default is 10.43.0.10; may differ on other distributions
       resolver 10.43.0.10 valid=30s;
 
       location / {
@@ -322,7 +508,7 @@ kubectl run test-proxy --rm -it --image=alpine -- sh -c \
 
 ---
 
-## Step 4: Create Traefik HTTPS Ingress
+## Step 5: Create Traefik HTTPS Ingress
 
 K8s nodes (containerd) pull from `registry.bto.bar`, which redirects auth to `gitea.k3s.bto.bar`. The token endpoint must be reachable over HTTPS through Traefik.
 
@@ -366,7 +552,7 @@ curl -sk "https://gitea.k3s.bto.bar/v2/token?service=container_registry"
 
 ---
 
-## Step 5: Configure K3s Node Registries
+## Step 6: Configure K3s Node Registries
 
 containerd on K3s nodes cannot resolve cluster DNS (`*.svc.cluster.local`). It pulls from `registry.bto.bar` and reaches the auth token endpoint at `gitea.k3s.bto.bar`. Both need TLS skip because neither hostname has a valid certificate from the node's perspective.
 
@@ -519,7 +705,7 @@ done
 
 ---
 
-## Step 6: Update K8s Manifests
+## Step 7: Update K8s Manifests
 
 ### Image References
 
@@ -552,22 +738,84 @@ Files to update:
 
 ---
 
-## Step 7: Update the CI Pipeline
+## Step 8: Update the CI Pipeline
 
 The CI pipeline (`.github/workflows/build-image.yml`) changes from using `docker/build-push-action` with GHCR to spawning Kaniko pods that push to the internal Gitea service.
 
 ### Key Design Decisions
 
 1. **Push target:** Internal Gitea service (`gitea-http.gitea-system.svc.cluster.local:3000`) over HTTP with `--insecure-registry` flag
-2. **Auth token endpoint:** Reached via the nginx TLS proxy (Step 3) using `hostAliases` to override DNS
+2. **Auth token endpoint:** Reached via the nginx TLS proxy (Step 4) using `hostAliases` to override DNS
 3. **CA trust:** Init container merges custom CA cert into system cert bundle, Kaniko reads via `SSL_CERT_FILE`
 
 ### Pipeline Environment Variables
 
 ```yaml
 env:
+  # Internal Gitea service for Kaniko push (HTTP, no TLS issues)
   REGISTRY: gitea-http.gitea-system.svc.cluster.local:3000
-  ORG: jaybrto
+  ORG: <your-org>
+```
+
+### Path-Based Change Detection Job
+
+Add a `changes` job before your build jobs so you only rebuild images whose source files changed. This is critical for monorepos with multiple Dockerfiles:
+
+```yaml
+jobs:
+  changes:
+    runs-on: self-hosted
+    outputs:
+      runner: ${{ steps.filter.outputs.runner }}
+      orchestrator: ${{ steps.filter.outputs.orchestrator }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changes
+        id: filter
+        run: |
+          # workflow_dispatch: allow manually specifying which images to build
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            INPUT="${{ github.event.inputs.images }}"
+            if [ "$INPUT" = "all" ] || [ -z "$INPUT" ]; then
+              echo "runner=true" >> "$GITHUB_OUTPUT"
+              echo "orchestrator=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "runner=false" >> "$GITHUB_OUTPUT"
+              echo "orchestrator=false" >> "$GITHUB_OUTPUT"
+              IFS=',' read -ra IMGS <<< "$INPUT"
+              for img in "${IMGS[@]}"; do
+                echo "$(echo "$img" | xargs)=true" >> "$GITHUB_OUTPUT"
+              done
+            fi
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only HEAD~1 HEAD)
+
+          # Shared files (package.json, shared libs) trigger all builds
+          SHARED=false
+          if echo "$CHANGED" | grep -qE '^(package\.json|bun\.lock|src/lib/|src/shared/)'; then
+            SHARED=true
+          fi
+
+          # Each image: define which paths trigger it
+          if [ "$SHARED" = "true" ] || echo "$CHANGED" | grep -qE '^(Dockerfile|src/)'; then
+            echo "runner=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "runner=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$SHARED" = "true" ] || echo "$CHANGED" | grep -qE '^(Dockerfile\.orchestrator|src/orchestrator/)'; then
+            echo "orchestrator=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "orchestrator=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Build jobs use: needs: changes
+  #                 if: needs.changes.outputs.runner == 'true'
 ```
 
 ### Build Job Pattern (repeat for each image)
@@ -699,9 +947,11 @@ deploy:
 
 ---
 
-## Step 8: Update RBAC
+## Step 9: Update RBAC (Existing Runner Only)
 
-The GitHub Actions runner service account needs additional permissions to:
+> **Skip this step if you deployed a fresh runner in Step 1** — the RBAC manifest there already includes all required permissions.
+
+If you have an **existing runner** that was previously using `ubuntu-latest` with `docker/build-push-action`, you need to add these permissions for the Kaniko workflow:
 - Create/delete Kaniko build pods
 - Read services (to get the auth proxy ClusterIP)
 - Patch deployments/statefulsets (to trigger rollout restarts)
@@ -738,19 +988,34 @@ rules:
 
 ---
 
-## Step 9: Verify Everything Works
+## Step 10: Verify Everything Works
 
 ### Verify Push (trigger a CI build)
 
+**Via GitHub Actions (standard):**
 ```bash
 gh workflow run build-image.yml -f images=all
 gh run list --limit 1 --watch
 ```
 
-All three build jobs should succeed. Check logs:
+Check logs:
 ```bash
 gh run view <RUN_ID> --log | grep -E "(destination|Pushed)"
 ```
+
+**Via local build script (fallback, if running on a machine with cluster access):**
+
+If you have a `scripts/build-and-push.sh` that calls `docker buildx` or `kaniko` locally:
+```bash
+# Build locally and push to the Gitea registry
+bash scripts/build-and-push.sh
+
+# Then force a rollout to pick up the new image
+kubectl rollout restart statefulset/gwa-runner
+kubectl rollout status statefulset/gwa-runner --timeout=300s
+```
+
+> The local script is useful when the Actions runner is unavailable (e.g., you just redeployed it and it's registering with GitHub).
 
 ### Verify Pull (check pod image)
 
@@ -840,6 +1105,22 @@ lookup gitea-http.gitea-system.svc.cluster.local: Try again
 
 **Fix:** Never use cluster DNS in `registries.yaml`. Use external hostnames or ClusterIPs. The registries.yaml is read by containerd on the host, which doesn't have access to K8s CoreDNS.
 
+### 429 Too Many Requests pulling base image
+
+```
+error: failed to retrieve image "docker.io/library/debian:bookworm-slim": ...
+toomanyrequests: You have reached your pull rate limit
+```
+
+**Cause:** Docker Hub rate-limiting unauthenticated pulls from your node's IP. Free tier allows 100 pulls/6h unauthenticated, 200/6h authenticated.
+
+**Fix:** Add Docker Hub credentials to the `gitea-registry-push` secret (Step 3). The `https://index.docker.io/v1/` entry is used by Kaniko for all `FROM` pulls and `--cache-repo` fetches:
+```bash
+# Recreate the secret with the Docker Hub entry added (see Step 3)
+# Verify it was picked up:
+kubectl get secret gitea-registry-push -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | python3 -m json.tool | grep -A1 "docker.io"
+```
+
 ### nginx proxy: "host not found in upstream"
 
 **Cause:** nginx resolves upstreams at startup and fails if DNS isn't ready.
@@ -866,6 +1147,7 @@ location / {
 | Cluster DNS in `registries.yaml` mirrors | containerd runs on the host, not in K8s; cannot resolve `*.svc.cluster.local` |
 | Single Traefik Ingress with `web,websecure` entrypoints | Traefik ignores `websecure` without a `spec.tls` section; need a separate Ingress |
 | socat as a proxy | musl libc in `alpine/socat` can't resolve K8s service FQDNs via `getaddrinfo()` |
+| No Docker Hub auth in push secret | Kaniko uses the same `config.json` for `FROM` pulls — no auth = rate limited from your node IP |
 
 ### Things That Do Work
 
@@ -876,6 +1158,7 @@ location / {
 | `registries.yaml` with `insecure_skip_verify` | containerd skips TLS verification for configured hosts, including auth token endpoints |
 | Separate TLS Ingress for auth hostname | Traefik auto-generates a cert (doesn't matter that it's invalid since containerd skips verify) |
 | nginx with `resolver` + `set $upstream` variable | Runtime DNS resolution instead of startup-time, prevents boot failures |
+| Docker Hub access token in `gitea-registry-push` secret | Kaniko picks it up from `/kaniko/.docker/config.json`; authenticates `FROM` pulls automatically |
 
 ### Important Architecture Notes
 
@@ -895,7 +1178,7 @@ location / {
 |------|---------|
 | `.github/workflows/build-image.yml` | CI pipeline: builds 3 images with Kaniko, pushes to internal Gitea, deploys |
 | `k8s/gitea-auth-proxy.yaml` | nginx TLS proxy: HTTPS:443 -> Gitea HTTP:3000 with self-signed cert |
-| `k8s/gwa-actions-runner.yaml` | GitHub Actions runner RBAC (services, deployments access) |
+| `k8s/gwa-actions-runner.yaml` | Self-hosted runner: ServiceAccount, Role (pods+services+deployments), RoleBinding, and `myoung34/github-runner` Deployment with kubectl init container |
 | `k8s/gwa-runner-statefulset.yaml` | Runner StatefulSet (image: `registry.bto.bar/jaybrto/github-workflow-agents`) |
 | `k8s/gwa-orchestrator.yaml` | Orchestrator Deployment (image: `registry.bto.bar/jaybrto/gwa-orchestrator`) |
 | `k8s/gwa-webhook.yaml` | Webhook Deployment (image: `registry.bto.bar/jaybrto/gwa-webhook`) |
@@ -905,7 +1188,7 @@ location / {
 
 | Secret | Type | Purpose |
 |--------|------|---------|
-| `gitea-registry-push` | `kubernetes.io/dockerconfigjson` | Kaniko push credentials (dual entries: internal + auth host) |
+| `gitea-registry-push` | `kubernetes.io/dockerconfigjson` | Kaniko push credentials (three entries: internal service + auth host + Docker Hub) |
 | `gitea-registry-secret` | `kubernetes.io/dockerconfigjson` | Pod imagePullSecrets (registry.bto.bar) |
 | `gitea-proxy-tls` | `kubernetes.io/tls` | Self-signed cert/key for nginx auth proxy |
 | `gitea-proxy-ca` | ConfigMap | CA cert for Kaniko init containers |
