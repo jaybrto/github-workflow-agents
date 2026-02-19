@@ -16,7 +16,7 @@ import { analyzeTaskComplexity } from "./lib/task-analyzer.js";
 import { generateComment } from "./lib/comment-generator.js";
 import { startMetricsExporter } from "./lib/metrics-exporter.js";
 import { isCredentialExpired, tryRecoverCredentials } from "./lib/credentials-manager.js";
-import { randomUUID } from "crypto";
+
 
 async function main() {
   const { values } = parseArgs({
@@ -318,9 +318,9 @@ async function orchestrate(ctx: PRContext): Promise<void> {
         log("warn", `Claude auth failure, attempting MinIO credential recovery (attempt ${authRetries}/${MAX_AUTH_RETRIES})`, {
           error: error.message.slice(0, 200),
         });
-        db.logActivity(null, "auth_recovery_attempt", { attempt: authRetries, recovered: false }, "system");
+        db.logActivity(null, "auth_recovery_start", { attempt: authRetries }, "system");
         const recovered = await tryRecoverCredentials();
-        db.logActivity(null, "auth_recovery_attempt", { attempt: authRetries, recovered }, "system");
+        db.logActivity(null, "auth_recovery_result", { attempt: authRetries, recovered }, "system");
         if (!recovered) throw error;
         claude.preloadClaudeConfig();
         continue;
