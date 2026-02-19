@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.4.0] - 2026-02-19
+
+### Added
+- `isCredentialExpired()` in `credentials-manager.ts` — checks if stored OAuth token is expired or within 5 minutes of expiry
+- `tryRecoverCredentials()` in `credentials-manager.ts` — force-deletes expired credentials file, restores from MinIO, updates `CLAUDE_CODE_OAUTH_TOKEN` env var
+- Proactive token expiry check in `orchestrate.ts`, `start-planning.ts`, and `resume-with-failures.ts` before Claude starts
+- Reactive auth retry loop (max 2 retries) in `orchestrate.ts` and `start-planning.ts` on `ClaudeAuthError`
+- Auth failure GitHub notifications in `start-planning.ts` and `resume-with-failures.ts`
+
+### Fixed
+- `restoreCredentialsIfMissing()` was skipping MinIO restore when expired credentials file existed — `tryRecoverCredentials()` fixes this by deleting first
+- `executeHeadlessMode` was not throwing `ClaudeAuthError` — auth failure now propagates to the retry loop
+- Backup CronJob no longer backs up expired credentials to MinIO (prevents restore loops)
+- `CLAUDE_CODE_OAUTH_TOKEN` env var is now updated after MinIO restore so headless subprocess gets the fresh token
+
 ## [4.3.2] - 2026-02-19
 
 ### Added
