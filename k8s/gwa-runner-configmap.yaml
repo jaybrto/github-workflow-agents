@@ -66,6 +66,13 @@ data:
       sqlite3 "${DB_PATH}" < "${SCHEMA_PATH}"
     fi
 
+    # Provision environment from orchestrator (credentials, settings, config)
+    # Falls back gracefully if orchestrator is unreachable — gwa-provision exits 0 on failure
+    echo "[GWA] Provisioning environment from orchestrator..."
+    if command -v gwa-provision &> /dev/null; then
+      gwa-provision 2>/dev/null || true
+    fi
+
     # Sync Claude config from credentials (run on every start - ~/.config/claude/ is ephemeral)
     # This recreates ~/.config/claude/config.json from the persistent ~/.claude/.credentials.json
     if [ -f "/home/runner/.claude/.credentials.json" ]; then

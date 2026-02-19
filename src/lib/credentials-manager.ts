@@ -7,6 +7,7 @@ import {
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { $ } from "bun";
+import type { ProvisionResponse } from "../shared/types.js";
 
 const MINIO_ENDPOINT =
   process.env.MINIO_ENDPOINT || "minio.bto.bar:9000";
@@ -14,8 +15,15 @@ const MINIO_ACCESS_KEY = process.env.MINIO_ACCESS_KEY || "";
 const MINIO_SECRET_KEY = process.env.MINIO_SECRET_KEY || "";
 const MINIO_BUCKET = process.env.MINIO_BUCKET || "gwa-recordings";
 
+// Orchestrator provisioning config — read at call time (not module load)
+// so tests and runtime changes to env vars take effect
+const ORCHESTRATOR_TIMEOUT_MS = 10_000; // 10 seconds
+
 // Pod name from env (set by K8s downward API); falls back to hostname
 const POD_NAME = process.env.POD_NAME || process.env.HOSTNAME || "unknown-pod";
+
+/** Tracks the current active bundle ID (set after successful provision) */
+let currentBundleId: string | undefined;
 
 /**
  * S3 key for this pod's credentials backup.
@@ -41,12 +49,13 @@ function getS3Client(): S3Client {
   });
 }
 
-const HOME = process.env.HOME || "/home/runner";
-const CLAUDE_DIR = join(HOME, ".claude");
-const CREDENTIALS_PATH = join(CLAUDE_DIR, ".credentials.json");
-const SETTINGS_PATH = join(HOME, ".claude.json");
-const CONFIG_DIR = join(HOME, ".config", "claude");
-const CONFIG_PATH = join(CONFIG_DIR, "config.json");
+// Path helpers — read HOME at call time so tests can override process.env.HOME
+function getHome(): string { return process.env.HOME || "/home/runner"; }
+function getClaudeDir(): string { return join(getHome(), ".claude"); }
+function getCredentialsPath(): string { return join(getClaudeDir(), ".credentials.json"); }
+function getSettingsPath(): string { return join(getHome(), ".claude.json"); }
+function getConfigDir(): string { return join(getHome(), ".config", "claude"); }
+function getConfigPath(): string { return join(getConfigDir(), "config.json"); }
 
 /**
  * Sync ~/.config/claude/config.json from ~/.claude/.credentials.json.
@@ -54,17 +63,17 @@ const CONFIG_PATH = join(CONFIG_DIR, "config.json");
  * Must be called on every pod start since ~/.config/claude/ is ephemeral.
  */
 export function syncConfigFromCredentials(): void {
-  if (!existsSync(CREDENTIALS_PATH)) return;
+  if (!existsSync(getCredentialsPath())) return;
 
   try {
-    const creds = JSON.parse(readFileSync(CREDENTIALS_PATH, "utf-8"));
+    const creds = JSON.parse(readFileSync(getCredentialsPath(), "utf-8"));
     const accessToken =
       creds?.claudeAiOauth?.accessToken || creds?.oauthToken;
     if (!accessToken) return;
 
-    mkdirSync(CONFIG_DIR, { recursive: true });
+    mkdirSync(getConfigDir(), { recursive: true });
     writeFileSync(
-      CONFIG_PATH,
+      getConfigPath(),
       JSON.stringify({ oauthToken: accessToken }, null, 2)
     );
     console.log(
@@ -81,9 +90,9 @@ export function syncConfigFromCredentials(): void {
  * Safe to call before every Claude invocation — only reads a local file.
  */
 export function isCredentialExpired(): boolean {
-  if (!existsSync(CREDENTIALS_PATH)) return true;
+  if (!existsSync(getCredentialsPath())) return true;
   try {
-    const raw = readFileSync(CREDENTIALS_PATH, "utf-8");
+    const raw = readFileSync(getCredentialsPath(), "utf-8");
     const creds = JSON.parse(raw);
     const expiresAt = creds?.claudeAiOauth?.expiresAt;
     if (!expiresAt || typeof expiresAt !== "number") return true;
@@ -95,10 +104,154 @@ export function isCredentialExpired(): boolean {
 }
 
 /**
+ * Provision environment from the orchestrator service.
+ *
+ * Calls POST /projects/:id/provision, then downloads and extracts the
+ * tar.gz bundle from MinIO. Returns true if valid credentials were provisioned.
+ *
+ * Falls back gracefully: returns false on any error or timeout (10s).
+ */
+export async function provisionFromOrchestrator(): Promise<boolean> {
+  const orchestratorUrl = process.env.ORCHESTRATOR_URL || "";
+  const projectId = process.env.GWA_PROJECT_ID || "";
+  const apiKey = process.env.GWA_API_KEY || "";
+
+  if (!orchestratorUrl || !projectId || !apiKey) {
+    console.log("[CredentialsManager] Orchestrator not configured, skipping orchestrator provision");
+    return false;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ORCHESTRATOR_TIMEOUT_MS);
+
+    const provisionUrl = `${orchestratorUrl}/projects/${projectId}/provision`;
+    const response = await fetch(provisionUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        podName: POD_NAME,
+        currentBundleId,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      console.warn(`[CredentialsManager] Orchestrator provision failed: ${response.status}`);
+      return false;
+    }
+
+    const result = (await response.json()) as ProvisionResponse;
+
+    if (result.status === "current") {
+      console.log("[CredentialsManager] Orchestrator says current bundle is still valid");
+      // Bundle is current — credentials should still be on disk
+      if (!isCredentialExpired()) return true;
+      // Credentials on disk are expired even though bundle is "current" — re-provision
+      console.warn("[CredentialsManager] Bundle marked current but local credentials expired, will re-download");
+    }
+
+    if (result.status === "no_credentials") {
+      console.warn(`[CredentialsManager] Orchestrator has no credentials: ${result.message}`);
+      return false;
+    }
+
+    if (result.status === "provisioned" && result.s3Key) {
+      // Download bundle from MinIO and extract
+      const extracted = await downloadAndExtractBundle(result.s3Key, result.s3Bucket);
+      if (!extracted) return false;
+
+      currentBundleId = result.bundleId;
+      syncConfigFromCredentials();
+
+      // Validate the extracted credentials
+      if (isCredentialExpired()) {
+        console.warn("[CredentialsManager] Provisioned credentials are expired");
+        return false;
+      }
+
+      // Update process.env
+      updateEnvFromCredentials();
+
+      console.log(`[CredentialsManager] Provisioned from orchestrator (bundle ${result.bundleId})`);
+      return true;
+    }
+
+    console.warn(`[CredentialsManager] Unexpected provision status: ${result.status}`);
+    return false;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      console.warn("[CredentialsManager] Orchestrator provision timed out");
+    } else {
+      console.warn("[CredentialsManager] Orchestrator provision error:", error);
+    }
+    return false;
+  }
+}
+
+/**
+ * Download a tar.gz bundle from MinIO and extract to $HOME.
+ */
+async function downloadAndExtractBundle(s3Key: string, s3Bucket?: string): Promise<boolean> {
+  const tarPath = `/tmp/env-bundle-${Date.now()}.tar.gz`;
+  try {
+    const client = getS3Client();
+    const response = await client.send(
+      new GetObjectCommand({
+        Bucket: s3Bucket || MINIO_BUCKET,
+        Key: s3Key,
+      }),
+    );
+    const body = response.Body;
+    if (!body) return false;
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of body as AsyncIterable<Uint8Array>) {
+      chunks.push(Buffer.from(chunk));
+    }
+    writeFileSync(tarPath, Buffer.concat(chunks));
+    mkdirSync(getClaudeDir(), { recursive: true });
+    mkdirSync(getConfigDir(), { recursive: true });
+    await $`tar xzf ${tarPath} -C ${getHome()} 2>/dev/null`.quiet();
+    console.log(`[CredentialsManager] Extracted bundle from ${s3Key}`);
+    return true;
+  } catch (e) {
+    console.warn(`[CredentialsManager] Failed to download/extract bundle:`, e);
+    return false;
+  } finally {
+    try { await $`rm -f ${tarPath}`.quiet(); } catch {}
+  }
+}
+
+/** Update process.env.CLAUDE_CODE_OAUTH_TOKEN from on-disk credentials */
+function updateEnvFromCredentials(): void {
+  try {
+    const raw = readFileSync(getCredentialsPath(), "utf-8");
+    const creds = JSON.parse(raw);
+    const accessToken = creds?.claudeAiOauth?.accessToken || creds?.oauthToken;
+    if (accessToken) {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = accessToken;
+      console.log("[CredentialsManager] Updated CLAUDE_CODE_OAUTH_TOKEN from credentials");
+    }
+  } catch (e) {
+    console.warn("[CredentialsManager] Failed to read credentials for env update:", e);
+  }
+}
+
+/**
  * Attempt to recover Claude credentials from MinIO.
  *
  * Deletes the local (expired) credentials file first so that
  * `restoreCredentialsIfMissing` is not fooled into skipping MinIO.
+ *
+ * Note: callers should try `provisionFromOrchestrator()` first — this function
+ * is the MinIO-only fallback path. The orchestrator call lives at the call site
+ * (orchestrate.ts, start-planning.ts, resume-with-failures.ts) to avoid
+ * double-calling the orchestrator.
  *
  * Returns true if valid credentials were restored, false if MinIO had nothing.
  */
@@ -109,9 +262,9 @@ export async function tryRecoverCredentials(): Promise<boolean> {
     return false;
   }
 
-  if (existsSync(CREDENTIALS_PATH)) {
+  if (existsSync(getCredentialsPath())) {
     try {
-      unlinkSync(CREDENTIALS_PATH);
+      unlinkSync(getCredentialsPath());
       console.log("[CredentialsManager] Deleted expired credentials to force MinIO restore");
     } catch (e) {
       console.warn("[CredentialsManager] Failed to delete expired credentials:", e);
@@ -129,18 +282,7 @@ export async function tryRecoverCredentials(): Promise<boolean> {
   }
 
   // Update process.env so headless Claude subprocess receives the fresh token
-  try {
-    const raw = readFileSync(CREDENTIALS_PATH, "utf-8");
-    const creds = JSON.parse(raw);
-    const accessToken = creds?.claudeAiOauth?.accessToken || creds?.oauthToken;
-    if (accessToken) {
-      process.env.CLAUDE_CODE_OAUTH_TOKEN = accessToken;
-      console.log("[CredentialsManager] Updated CLAUDE_CODE_OAUTH_TOKEN from restored credentials");
-    }
-  } catch (e) {
-    console.warn("[CredentialsManager] Failed to read restored credentials for env update:", e);
-    // Non-fatal: the credentials file is valid (passed isCredentialExpired), continue
-  }
+  updateEnvFromCredentials();
 
   return true;
 }
@@ -165,7 +307,7 @@ export async function backupCredentials(): Promise<boolean> {
     return false;
   }
 
-  if (!existsSync(CREDENTIALS_PATH)) {
+  if (!existsSync(getCredentialsPath())) {
     console.warn(
       "[CredentialsManager] No credentials file found, skipping backup"
     );
@@ -177,11 +319,11 @@ export async function backupCredentials(): Promise<boolean> {
   try {
     // Include .claude.json only if it exists (settings file)
     const filesToTar = [".claude/.credentials.json"];
-    if (existsSync(SETTINGS_PATH)) {
+    if (existsSync(getSettingsPath())) {
       filesToTar.push(".claude.json");
     }
 
-    await $`tar czf ${tarPath} -C ${HOME} ${filesToTar} 2>/dev/null`.quiet();
+    await $`tar czf ${tarPath} -C ${getHome()} ${filesToTar} 2>/dev/null`.quiet();
 
     const data = readFileSync(tarPath);
     const client = getS3Client();
@@ -246,8 +388,8 @@ async function tryRestoreFromKey(
       chunks.push(Buffer.from(chunk));
     }
     writeFileSync(tarPath, Buffer.concat(chunks));
-    mkdirSync(CLAUDE_DIR, { recursive: true });
-    await $`tar xzf ${tarPath} -C ${HOME} 2>/dev/null`.quiet();
+    mkdirSync(getClaudeDir(), { recursive: true });
+    await $`tar xzf ${tarPath} -C ${getHome()} 2>/dev/null`.quiet();
     console.log(`[CredentialsManager] Restored from ${label} (${key})`);
     return true;
   } catch {
@@ -267,7 +409,7 @@ async function tryRestoreFromKey(
  *   3. Legacy single-copy: claude-auth/credentials.tar.gz
  */
 export async function restoreCredentialsIfMissing(): Promise<boolean> {
-  if (existsSync(CREDENTIALS_PATH)) {
+  if (existsSync(getCredentialsPath())) {
     console.log("[CredentialsManager] Credentials already present, syncing config");
     syncConfigFromCredentials();
     return true;

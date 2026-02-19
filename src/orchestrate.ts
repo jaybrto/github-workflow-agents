@@ -15,7 +15,7 @@ import { startREPL } from "./lib/repl-session.js";
 import { analyzeTaskComplexity } from "./lib/task-analyzer.js";
 import { generateComment } from "./lib/comment-generator.js";
 import { startMetricsExporter } from "./lib/metrics-exporter.js";
-import { isCredentialExpired, tryRecoverCredentials } from "./lib/credentials-manager.js";
+import { isCredentialExpired, tryRecoverCredentials, provisionFromOrchestrator } from "./lib/credentials-manager.js";
 
 
 async function main() {
@@ -172,16 +172,23 @@ async function orchestrate(ctx: PRContext): Promise<void> {
     throw new Error(`Auth pre-flight failed: ${authCheck.error}`);
   }
 
-  // 0.5. Proactive token expiry check — attempt MinIO restore before starting Claude
+  // 0.5. Proactive token expiry check — attempt orchestrator/MinIO restore before starting Claude
   if (isCredentialExpired()) {
-    log("warn", "OAuth token expired or near expiry, attempting MinIO restore");
-    const recovered = await tryRecoverCredentials();
-    if (!recovered) {
-      await postAuthStuckComment(ctx, "OAuth token is expired and no MinIO backup is available. Manual re-login required.");
-      throw new Error("Auth recovery failed: no valid credentials in MinIO");
+    log("warn", "OAuth token expired or near expiry, attempting recovery");
+    // Try orchestrator first (may have auto-refreshed), then MinIO fallback
+    const provisioned = await provisionFromOrchestrator();
+    if (provisioned) {
+      claude.preloadClaudeConfig();
+      log("info", "Credentials provisioned from orchestrator before Claude start");
+    } else {
+      const recovered = await tryRecoverCredentials();
+      if (!recovered) {
+        await postAuthStuckComment(ctx, "OAuth token is expired and no backup is available. Manual re-login required.");
+        throw new Error("Auth recovery failed: no valid credentials available");
+      }
+      claude.preloadClaudeConfig();
+      log("info", "Credentials restored from MinIO before Claude start");
     }
-    claude.preloadClaudeConfig();
-    log("info", "Credentials restored from MinIO before Claude start");
   }
 
   // 1. Ensure tmux session exists

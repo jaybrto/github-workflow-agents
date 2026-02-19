@@ -77,6 +77,17 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # Orchestrator provisioning
+            - name: ORCHESTRATOR_URL
+              value: "http://gwa-orchestrator.default.svc:3001"
+            - name: GWA_PROJECT_ID
+              value: "gwa"
+            - name: GWA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: orchestrator-api-key
+                  optional: true
             # Secrets
             - name: CLAUDE_CODE_OAUTH_TOKEN
               valueFrom:

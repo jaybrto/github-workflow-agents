@@ -2,18 +2,26 @@
  * Orchestrator Service Entry Point
  *
  * Initializes the orchestrator's own SQLite database, AMQP connections,
- * session aggregator, push bridge, and REST API server.
+ * session aggregator, push bridge, environment provisioner, and REST API server.
  */
 
 import { Database } from "bun:sqlite";
+import { S3Client } from "@aws-sdk/client-s3";
 import { SessionAggregator } from "./session-aggregator.js";
 import { PushBridge } from "./push-bridge.js";
+import { EnvironmentProvisioner } from "./environment-provisioner.js";
 import { createRestApi } from "./rest-api.js";
 import type { AmqpMessage } from "../shared/types.js";
 import type { AmqpPublishFn } from "./webhook-handler.js";
 
 const ORCHESTRATOR_PORT = parseInt(process.env.ORCHESTRATOR_PORT || "3001");
 const DB_PATH = process.env.ORCHESTRATOR_DB_PATH || "/tmp/gwa-orchestrator.db";
+
+// MinIO / S3 config
+const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || "minio.bto.bar:9000";
+const MINIO_ACCESS_KEY = process.env.MINIO_ACCESS_KEY || "";
+const MINIO_SECRET_KEY = process.env.MINIO_SECRET_KEY || "";
+const MINIO_BUCKET = process.env.MINIO_BUCKET || "gwa-recordings";
 
 // ---------------------------------------------------------------------------
 // SQLite schema for the orchestrator's own database
@@ -60,6 +68,22 @@ function initOrchestratorDb(dbPath: string): Database {
 
   console.log(`[Orchestrator] Database initialized at ${dbPath}`);
   return db;
+}
+
+// ---------------------------------------------------------------------------
+// S3 client for MinIO
+// ---------------------------------------------------------------------------
+
+function getS3Client(): S3Client {
+  return new S3Client({
+    endpoint: `http://${MINIO_ENDPOINT}`,
+    region: "us-east-1",
+    credentials: {
+      accessKeyId: MINIO_ACCESS_KEY,
+      secretAccessKey: MINIO_SECRET_KEY,
+    },
+    forcePathStyle: true,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -166,11 +190,23 @@ async function main() {
     pushBridge.handleEvent(msg);
   });
 
-  // 5. Start REST API
+  // 5. Initialize environment provisioner
+  const s3 = getS3Client();
+  const provisioner = new EnvironmentProvisioner({
+    db,
+    s3,
+    s3Bucket: MINIO_BUCKET,
+    pushBridge,
+  });
+  provisioner.initSchema();
+  provisioner.start();
+
+  // 6. Start REST API
   const restHandler = createRestApi({
     aggregator,
     publishToAmqp: amqp.publish,
     db,
+    provisioner,
   });
 
   const server = Bun.serve({
@@ -180,9 +216,10 @@ async function main() {
 
   console.log(`[Orchestrator] REST API listening on http://localhost:${server.port}`);
 
-  // 6. Graceful shutdown
+  // 7. Graceful shutdown
   const shutdown = async () => {
     console.log("[Orchestrator] Shutting down...");
+    provisioner.stop();
     aggregator.stop();
     server.stop();
     await amqp.close();

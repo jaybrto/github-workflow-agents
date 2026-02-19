@@ -12,7 +12,7 @@ import * as tmux from "../lib/tmux.js";
 import * as db from "../lib/db.js";
 import { restoreActor, persistSnapshot, getStateName, canTransition } from "../lib/state-machine.js";
 import { preloadClaudeConfig, detectAuthFailure, ClaudeAuthError } from "../lib/claude.js";
-import { isCredentialExpired, tryRecoverCredentials } from "../lib/credentials-manager.js";
+import { isCredentialExpired, tryRecoverCredentials, provisionFromOrchestrator } from "../lib/credentials-manager.js";
 import { handleDialogIfPresent } from "../lib/dialog-handler.js";
 import { getOctokit } from "../lib/github.js";
 
@@ -135,20 +135,25 @@ async function resumeWithFailures(issueNumber: number): Promise<void> {
     preloadClaudeConfig();
 
     if (isCredentialExpired()) {
-      log("warn", "OAuth token expired before QA resume, attempting MinIO restore");
-      const recovered = await tryRecoverCredentials();
-      if (!recovered) {
-        // Notify the issue/PR that QA resume failed due to expired auth
-        await octokit.issues.createComment({
-          owner,
-          repo: repoName,
-          issue_number: issueNumber,
-          body: "**Auth failure:** OAuth token is expired and no MinIO backup is available. QA resume aborted. Manual re-login required.",
-        });
-        throw new Error("Auth recovery failed: no valid credentials in MinIO");
+      log("warn", "OAuth token expired before QA resume, attempting recovery");
+      const provisioned = await provisionFromOrchestrator();
+      if (provisioned) {
+        preloadClaudeConfig();
+        log("info", "Credentials provisioned from orchestrator before QA resume");
+      } else {
+        const recovered = await tryRecoverCredentials();
+        if (!recovered) {
+          await octokit.issues.createComment({
+            owner,
+            repo: repoName,
+            issue_number: issueNumber,
+            body: "**Auth failure:** OAuth token is expired and no backup is available. QA resume aborted. Manual re-login required.",
+          });
+          throw new Error("Auth recovery failed: no valid credentials available");
+        }
+        preloadClaudeConfig();
+        log("info", "Credentials restored from MinIO before QA resume");
       }
-      preloadClaudeConfig();
-      log("info", "Credentials restored from MinIO before QA resume");
     }
 
     // Start Claude REPL with resume

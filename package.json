@@ -1,10 +1,10 @@
 {
   "name": "github-workflow-agents",
-  "version": "4.5.0",
+  "version": "4.6.0",
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "bun run build:orchestrate && bun run build:respond && bun run build:cleanup && bun run build:debug-db && bun run build:health-check && bun run build:ask-question && bun run build:session-complete && bun run build:architect && bun run build:worker && bun run build:setup-project && bun run build:start-planning && bun run build:inject-prompt && bun run build:run-playwright && bun run build:resume-with-failures && bun run build:send-answer && bun run build:deploy-and-cleanup && bun run build:terminal-relay && bun run build:webhook && bun run build:credentials-backup",
+    "build": "bun run build:orchestrate && bun run build:respond && bun run build:cleanup && bun run build:debug-db && bun run build:health-check && bun run build:ask-question && bun run build:session-complete && bun run build:architect && bun run build:worker && bun run build:setup-project && bun run build:start-planning && bun run build:inject-prompt && bun run build:run-playwright && bun run build:resume-with-failures && bun run build:send-answer && bun run build:deploy-and-cleanup && bun run build:terminal-relay && bun run build:webhook && bun run build:credentials-backup && bun run build:push-credentials && bun run build:provision",
     "build:orchestrate": "bun build src/orchestrate.ts --compile --outfile dist/gwa-orchestrate",
     "build:respond": "bun build src/respond.ts --compile --outfile dist/gwa-respond",
     "build:cleanup": "bun build src/cleanup.ts --compile --outfile dist/gwa-cleanup",
@@ -25,6 +25,8 @@
     "build:orchestrator": "bun build src/orchestrator/index.ts --compile --outfile dist/gwa-orchestrator",
     "build:webhook": "bun build src/webhook/handler.ts --compile --outfile dist/gwa-webhook",
     "build:credentials-backup": "bun build src/credentials-backup.ts --compile --outfile dist/gwa-credentials-backup",
+    "build:push-credentials": "bun build src/push-credentials.ts --compile --outfile dist/gwa-push-credentials",
+    "build:provision": "bun build src/provision.ts --compile --outfile dist/gwa-provision",
     "webhook": "bun run src/webhook/handler.ts",
     "test": "bun test"
   },
@@ -50,12 +52,14 @@
     "amqplib": "^0.10.7",
     "ansi-to-svg": "^1.4.3",
     "node-tmux": "^1.0.2",
+    "tar-stream": "^3.1.7",
     "xstate": "^5.26.0"
   },
   "devDependencies": {
     "@types/amqplib": "^0.10.8",
     "@types/bun": "^1.1.0",
     "@types/node": "^22.0.0",
+    "@types/tar-stream": "^3.1.4",
     "typescript": "^5.5.0",
     "yaml": "^2.8.2"
   }

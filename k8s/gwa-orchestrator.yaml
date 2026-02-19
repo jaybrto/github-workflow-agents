@@ -1,4 +1,20 @@
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: orchestrator-data
+  namespace: default
+  labels:
+    app: github-workflow-agents
+    component: orchestrator
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn-claude
+  resources:
+    requests:
+      storage: 1Gi
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,6 +68,30 @@ spec:
                 secretKeyRef:
                   name: gwa-webhook-secrets
                   key: github-app-secret
+            # MinIO for environment bundles
+            - name: MINIO_ENDPOINT
+              value: "minio.bto.bar:9000"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: minio-access-key
+                  optional: true
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: minio-secret-key
+                  optional: true
+            - name: MINIO_BUCKET
+              value: "gwa-recordings"
+            # API key for credential-sensitive endpoints
+            - name: GWA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: orchestrator-api-key
+                  optional: true
           resources:
             requests:
               memory: "128Mi"
@@ -76,7 +116,8 @@ spec:
               mountPath: /data
       volumes:
         - name: orchestrator-data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: orchestrator-data
 
 ---
 apiVersion: v1

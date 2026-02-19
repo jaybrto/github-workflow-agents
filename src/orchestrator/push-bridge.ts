@@ -166,6 +166,14 @@ export class PushBridge {
     );
   }
 
+  /**
+   * Send a notification directly, bypassing AMQP event routing.
+   * Used by the EnvironmentProvisioner for auth alerts.
+   */
+  async sendDirect(notification: PushNotification): Promise<boolean> {
+    return this.sendNotification(notification);
+  }
+
   /** For testing — reset all state */
   reset(): void {
     this.sessionState.clear();

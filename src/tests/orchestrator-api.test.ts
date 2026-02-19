@@ -4,6 +4,9 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
 import { SessionAggregator } from "../orchestrator/session-aggregator.js";
+import { EnvironmentProvisioner } from "../orchestrator/environment-provisioner.js";
+import { PushBridge } from "../orchestrator/push-bridge.js";
+import { S3Client } from "@aws-sdk/client-s3";
 import { createRestApi } from "../orchestrator/rest-api.js";
 import type { AmqpPublishFn } from "../orchestrator/webhook-handler.js";
 
@@ -58,7 +61,12 @@ beforeAll(() => {
     sessionId: "pr-42",
   });
 
-  handleRequest = createRestApi({ aggregator, publishToAmqp: mockPublish, db });
+  const pushBridge = new PushBridge();
+  const s3 = new S3Client({ region: "us-east-1" });
+  const provisioner = new EnvironmentProvisioner({ db, s3, s3Bucket: "test", pushBridge });
+  provisioner.initSchema();
+
+  handleRequest = createRestApi({ aggregator, publishToAmqp: mockPublish, db, provisioner });
 });
 
 afterAll(() => {

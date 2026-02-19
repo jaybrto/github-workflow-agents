@@ -1,5 +1,26 @@
 # Changelog
 
+## [4.6.0] - 2026-02-19
+
+### Added
+- **Environment provisioning system** — centralized Claude Code config bundle management in the orchestrator
+  - `src/orchestrator/environment-provisioner.ts`: new `EnvironmentProvisioner` class with project CRUD, credential storage, OAuth refresh, tar.gz bundle generation (via `tar-stream`), proactive refresh timer (30 min), expired bundle cleanup (6h)
+  - `src/shared/types.ts`: `ProjectConfig`, `ProjectCredential`, `EnvironmentBundle`, `ProvisionRequest`, `ProvisionResponse`, `CredentialPushRequest`, `CredentialHealth` interfaces; extended `PushNotification` with `auth_expiring` and `auth_refresh_failed` types
+  - `src/orchestrator/rest-api.ts`: `/projects` CRUD, `/projects/:id/credentials` (push), `/projects/:id/provision` (main pod endpoint), `/projects/:id/refresh` (manual OAuth refresh), `/projects/:id/health` — all with Bearer token auth
+  - `src/orchestrator/push-bridge.ts`: `sendDirect()` for non-AMQP notifications (auth alerts)
+  - `src/orchestrator/index.ts`: wired up `EnvironmentProvisioner` with S3Client, schema init, lifecycle, and REST API deps
+  - `src/lib/credentials-manager.ts`: `provisionFromOrchestrator()` — tries orchestrator before MinIO fallback; updated `tryRecoverCredentials()` with orchestrator-first recovery
+  - `src/orchestrate.ts`, `src/transitions/start-planning.ts`, `src/transitions/resume-with-failures.ts`: orchestrator-first credential recovery before Claude starts
+  - `src/push-credentials.ts`: CLI to push local `~/.claude/.credentials.json` to orchestrator (compiled as `gwa-push-credentials`)
+  - `src/provision.ts`: CLI for pod startup provisioning from orchestrator (compiled as `gwa-provision`)
+
+### Changed
+- `k8s/gwa-orchestrator.yaml`: switched from `emptyDir` to Longhorn PVC (`orchestrator-data`, 1Gi); added MinIO and `GWA_API_KEY` env vars
+- `k8s/gwa-runner-statefulset.yaml`: added `ORCHESTRATOR_URL`, `GWA_PROJECT_ID`, `GWA_API_KEY` env vars
+- `k8s/vault-external-secrets.yaml`: added `orchestrator-api-key` mapping
+- `k8s/gwa-runner-configmap.yaml`: added `gwa-provision` call before config sync step in entrypoint
+- `package.json`: added `tar-stream` dependency, `build:push-credentials` and `build:provision` targets
+
 ## [4.5.0] - 2026-02-19
 
 ### Fixed

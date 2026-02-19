@@ -19,7 +19,7 @@ import {
 } from "../lib/projects.js";
 import { generateComment } from "../lib/comment-generator.js";
 import { preloadClaudeConfig, detectAuthFailure, ClaudeAuthError } from "../lib/claude.js";
-import { isCredentialExpired, tryRecoverCredentials } from "../lib/credentials-manager.js";
+import { isCredentialExpired, tryRecoverCredentials, provisionFromOrchestrator } from "../lib/credentials-manager.js";
 import { handleDialogIfPresent } from "../lib/dialog-handler.js";
 import { createSessionActor, persistSnapshot, getStateName } from "../lib/state-machine.js";
 import { startPaneStream } from "../lib/terminal-relay.js";
@@ -319,21 +319,27 @@ Use /handoff if you need to pause and resume later.`;
   log("info", "Starting Claude REPL");
   preloadClaudeConfig();
 
-  // Proactive: restore credentials from MinIO if token is expired
+  // Proactive: restore credentials if token is expired (orchestrator first, then MinIO)
   if (isCredentialExpired()) {
-    log("warn", "OAuth token expired before REPL start, attempting MinIO restore");
-    const recovered = await tryRecoverCredentials();
-    if (!recovered) {
-      await octokit.issues.createComment({
-        owner,
-        repo: repoName,
-        issue_number: issueNumber,
-        body: "**Auth failure:** OAuth token is expired and no MinIO backup is available. Manual re-login required.",
-      });
-      throw new Error("Auth recovery failed: no valid credentials in MinIO");
+    log("warn", "OAuth token expired before REPL start, attempting recovery");
+    const provisioned = await provisionFromOrchestrator();
+    if (provisioned) {
+      preloadClaudeConfig();
+      log("info", "Credentials provisioned from orchestrator before REPL start");
+    } else {
+      const recovered = await tryRecoverCredentials();
+      if (!recovered) {
+        await octokit.issues.createComment({
+          owner,
+          repo: repoName,
+          issue_number: issueNumber,
+          body: "**Auth failure:** OAuth token is expired and no backup is available. Manual re-login required.",
+        });
+        throw new Error("Auth recovery failed: no valid credentials available");
+      }
+      preloadClaudeConfig();
+      log("info", "Credentials restored from MinIO before REPL start");
     }
-    preloadClaudeConfig(); // re-sync after restore
-    log("info", "Credentials restored from MinIO before REPL start");
   }
 
   // Start Claude REPL with reactive auth retry (max 2 attempts)

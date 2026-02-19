@@ -46,7 +46,7 @@ export interface AmqpMessage {
 
 // Push notification for ntfy.sh
 export interface PushNotification {
-  type: 'blocked' | 'error' | 'complete' | 'info';
+  type: 'blocked' | 'error' | 'complete' | 'info' | 'auth_expiring' | 'auth_refresh_failed';
   title: string;
   body: string;
   sessionId: string;
@@ -92,4 +92,96 @@ export interface SessionContext {
   prNumber?: number;
   worktreePath?: string;
   tmuxWindow?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Environment provisioning types
+// ---------------------------------------------------------------------------
+
+/** Project configuration stored in orchestrator DB */
+export interface ProjectConfig {
+  id: string;
+  displayName: string;
+  claudeAccountUuid?: string;
+  claudeOrgUuid?: string;
+  claudeEmail?: string;
+  settingsJson?: string;
+  claudeJson?: string;
+  mcpJson?: string;
+  claudeMd?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Credential row in orchestrator DB */
+export interface ProjectCredential {
+  id: string;
+  projectId: string;
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
+  accountUuid?: string;
+  emailAddress?: string;
+  organizationUuid?: string;
+  billingType: string;
+  displayName: string;
+  source: 'push' | 'refresh' | 'import';
+  pushedBy?: string;
+  createdAt: number;
+  invalidatedAt?: number;
+}
+
+/** Environment bundle metadata stored in orchestrator DB */
+export interface EnvironmentBundle {
+  id: string;
+  projectId: string;
+  credentialId: string;
+  version: number;
+  s3Key: string;
+  s3Bucket: string;
+  sizeBytes?: number;
+  configHash: string;
+  credentialExpiresAt: number;
+  createdAt: number;
+  expiredAt?: number;
+  cleanedUpAt?: number;
+}
+
+/** Request body for POST /projects/:id/provision */
+export interface ProvisionRequest {
+  podName: string;
+  currentBundleId?: string;
+}
+
+/** Response from POST /projects/:id/provision */
+export interface ProvisionResponse {
+  status: 'current' | 'provisioned' | 'no_credentials';
+  bundleId?: string;
+  s3Key?: string;
+  s3Bucket?: string;
+  credentialExpiresAt?: number;
+  message?: string;
+}
+
+/** Request body for POST /projects/:id/credentials */
+export interface CredentialPushRequest {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
+  accountUuid?: string;
+  emailAddress?: string;
+  organizationUuid?: string;
+  billingType?: string;
+  displayName?: string;
+}
+
+/** Credential health status for GET /projects/:id/health */
+export interface CredentialHealth {
+  projectId: string;
+  hasValidCredential: boolean;
+  expiresAt?: number;
+  expiresInMs?: number;
+  hasRefreshToken: boolean;
+  lastRefreshAt?: number;
+  activeBundleId?: string;
 }
