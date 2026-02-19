@@ -103,15 +103,32 @@ export function isCredentialExpired(): boolean {
  * Returns true if valid credentials were restored, false if MinIO had nothing.
  */
 export async function tryRecoverCredentials(): Promise<boolean> {
+  // Guard: if MinIO is not configured, don't destroy the local credentials file
+  if (!MINIO_ACCESS_KEY || !MINIO_SECRET_KEY) {
+    console.warn("[CredentialsManager] MinIO not configured, skipping credential recovery");
+    return false;
+  }
+
   if (existsSync(CREDENTIALS_PATH)) {
     try {
       unlinkSync(CREDENTIALS_PATH);
       console.log("[CredentialsManager] Deleted expired credentials to force MinIO restore");
     } catch (e) {
       console.warn("[CredentialsManager] Failed to delete expired credentials:", e);
+      return false; // Cannot safely proceed — expired file still present
     }
   }
-  return restoreCredentialsIfMissing();
+
+  const restored = await restoreCredentialsIfMissing();
+  if (!restored) return false;
+
+  // Validate the restored credentials are not themselves expired
+  if (isCredentialExpired()) {
+    console.warn("[CredentialsManager] Restored credentials from MinIO are still expired");
+    return false;
+  }
+
+  return true;
 }
 
 /**
