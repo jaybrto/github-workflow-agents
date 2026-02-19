@@ -4,7 +4,7 @@ import {
   GetObjectCommand,
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { $ } from "bun";
 
@@ -73,6 +73,45 @@ export function syncConfigFromCredentials(): void {
   } catch (e) {
     console.warn("[CredentialsManager] Failed to sync config:", e);
   }
+}
+
+/**
+ * Check whether the stored Claude OAuth credentials are expired or near expiry.
+ * Returns true if the file is missing, unparseable, or will expire within 5 minutes.
+ * Safe to call before every Claude invocation — only reads a local file.
+ */
+export function isCredentialExpired(): boolean {
+  if (!existsSync(CREDENTIALS_PATH)) return true;
+  try {
+    const raw = readFileSync(CREDENTIALS_PATH, "utf-8");
+    const creds = JSON.parse(raw);
+    const expiresAt = creds?.claudeAiOauth?.expiresAt;
+    if (!expiresAt || typeof expiresAt !== "number") return true;
+    const FIVE_MIN_MS = 5 * 60 * 1000;
+    return expiresAt < Date.now() + FIVE_MIN_MS;
+  } catch {
+    return true; // unparseable → treat as expired
+  }
+}
+
+/**
+ * Attempt to recover Claude credentials from MinIO.
+ *
+ * Deletes the local (expired) credentials file first so that
+ * `restoreCredentialsIfMissing` is not fooled into skipping MinIO.
+ *
+ * Returns true if valid credentials were restored, false if MinIO had nothing.
+ */
+export async function tryRecoverCredentials(): Promise<boolean> {
+  if (existsSync(CREDENTIALS_PATH)) {
+    try {
+      unlinkSync(CREDENTIALS_PATH);
+      console.log("[CredentialsManager] Deleted expired credentials to force MinIO restore");
+    } catch (e) {
+      console.warn("[CredentialsManager] Failed to delete expired credentials:", e);
+    }
+  }
+  return restoreCredentialsIfMissing();
 }
 
 /**
