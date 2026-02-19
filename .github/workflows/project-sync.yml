@@ -69,9 +69,10 @@ jobs:
           OWNER="${{ github.repository_owner }}"
 
           # Get all project items with their current status
+          # Use 'user' instead of 'organization' since jaybrto is a personal account
           ITEMS=$(gh api graphql -f query='
             query($owner: String!, $number: Int!) {
-              organization(login: $owner) {
+              user(login: $owner) {
                 projectV2(number: $number) {
                   items(first: 100) {
                     nodes {

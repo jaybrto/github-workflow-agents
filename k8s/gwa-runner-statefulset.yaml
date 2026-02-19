@@ -66,6 +66,13 @@ spec:
               value: "/home/runner/.claude/gwa.db"
             - name: SCHEMA_PATH
               value: "/home/runner/.claude/schema.sql"
+            # GitHub Projects v2 config
+            - name: GWA_PROJECT_OWNER_TYPE
+              value: "user"
+            - name: GWA_PROJECT_NUMBER
+              value: "2"
+            - name: GWA_PROJECT_OWNER
+              value: "jaybrto"
             - name: POD_NAME
               valueFrom:
                 fieldRef:

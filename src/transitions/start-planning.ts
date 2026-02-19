@@ -241,17 +241,28 @@ Use /handoff if you need to pause and resume later.`;
     }
   }
 
-  db.createSession({
-    id: sessionId,
-    type: "feature",
-    github_number: issueNumber,
-    github_type: "issue",
-    repo,
-    branch: branchName,
-    worktree_path: worktreePath,
-    initial_prompt: `Planning session for issue #${issueNumber}`,
-    project_item_id: resolvedItemId,
-  });
+  // Check for existing session (e.g., from a previous failed run)
+  const existingSession = db.getSession(sessionId);
+  if (existingSession) {
+    log("info", `Session ${sessionId} already exists (status: ${existingSession.status}), resetting for new run`);
+    db.updateSessionStatus(sessionId, "active", {
+      branch: branchName,
+      worktree_path: worktreePath,
+      project_item_id: resolvedItemId || null,
+    });
+  } else {
+    db.createSession({
+      id: sessionId,
+      type: "feature",
+      github_number: issueNumber,
+      github_type: "issue",
+      repo,
+      branch: branchName,
+      worktree_path: worktreePath,
+      initial_prompt: `Planning session for issue #${issueNumber}`,
+      project_item_id: resolvedItemId,
+    });
+  }
 
   db.logActivity(sessionId, "planning_started", { issue: issueNumber }, "workflow");
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.5.0] - 2026-02-19
+
+### Fixed
+- `src/lib/projects.ts` / `getProjectOwnerType()`: pod was missing `GWA_PROJECT_OWNER_TYPE` env var, causing GraphQL queries to default to `organization` instead of `user` — broke project resolution for personal account `jaybrto`
+- `k8s/gwa-runner-statefulset.yaml`: added `GWA_PROJECT_OWNER_TYPE`, `GWA_PROJECT_NUMBER`, and `GWA_PROJECT_OWNER` env vars so project queries use the correct owner type at runtime
+- `.github/workflows/project-sync.yml`: scheduled detect-changes job hardcoded `organization(login: $owner)` — changed to `user(login: $owner)` to match personal account
+- `src/transitions/start-planning.ts`: session creation now checks for existing session before INSERT, preventing `UNIQUE constraint failed: sessions.id` when re-triggering workflows for the same issue
+
 ## [4.4.0] - 2026-02-19
 
 ### Added
