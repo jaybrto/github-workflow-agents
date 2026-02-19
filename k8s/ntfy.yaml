@@ -16,6 +16,9 @@ spec:
       labels:
         app: ntfy
     spec:
+      # Avoid dellmini2 and lenovomini: both have a systemd cgroup v2 incompatibility
+      # that causes FailedCreatePodContainer errors (org.freedesktop.systemd1 timeout).
+      # Remove this affinity once the host OS on those nodes is upgraded.
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
