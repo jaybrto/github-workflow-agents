@@ -128,6 +128,20 @@ export async function tryRecoverCredentials(): Promise<boolean> {
     return false;
   }
 
+  // Update process.env so headless Claude subprocess receives the fresh token
+  try {
+    const raw = readFileSync(CREDENTIALS_PATH, "utf-8");
+    const creds = JSON.parse(raw);
+    const accessToken = creds?.claudeAiOauth?.accessToken || creds?.oauthToken;
+    if (accessToken) {
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = accessToken;
+      console.log("[CredentialsManager] Updated CLAUDE_CODE_OAUTH_TOKEN from restored credentials");
+    }
+  } catch (e) {
+    console.warn("[CredentialsManager] Failed to read restored credentials for env update:", e);
+    // Non-fatal: the credentials file is valid (passed isCredentialExpired), continue
+  }
+
   return true;
 }
 
@@ -135,22 +149,31 @@ export async function tryRecoverCredentials(): Promise<boolean> {
  * Back up Claude credentials to MinIO.
  * Tars: ~/.claude/.credentials.json + ~/.claude.json
  */
-export async function backupCredentials(): Promise<void> {
+export async function backupCredentials(): Promise<boolean> {
   if (!MINIO_ACCESS_KEY || !MINIO_SECRET_KEY) {
     console.warn(
       "[CredentialsManager] MinIO credentials not set, skipping backup"
     );
-    return;
+    return false;
+  }
+
+  // Guard: do not back up expired credentials.
+  // Restoring an expired backup is worse than having no backup —
+  // it causes tryRecoverCredentials to fail the post-restore expiry check.
+  if (isCredentialExpired()) {
+    console.warn("[CredentialsManager] Skipping backup: credentials are expired or near expiry");
+    return false;
   }
 
   if (!existsSync(CREDENTIALS_PATH)) {
     console.warn(
       "[CredentialsManager] No credentials file found, skipping backup"
     );
-    return;
+    return false;
   }
 
   const tarPath = "/tmp/claude-credentials.tar.gz";
+  let success = false;
   try {
     // Include .claude.json only if it exists (settings file)
     const filesToTar = [".claude/.credentials.json"];
@@ -190,6 +213,7 @@ export async function backupCredentials(): Promise<void> {
     console.log(
       `[CredentialsManager] Credentials backed up to MinIO: ${podKey} + legacy key`
     );
+    success = true;
   } catch (e) {
     console.warn("[CredentialsManager] Backup failed:", e);
   } finally {
@@ -197,6 +221,7 @@ export async function backupCredentials(): Promise<void> {
       await $`rm -f ${tarPath}`.quiet();
     } catch {}
   }
+  return success;
 }
 
 /**
