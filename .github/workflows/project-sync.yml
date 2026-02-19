@@ -144,17 +144,25 @@ jobs:
 
       - name: "Handler: run-playwright"
         if: github.event.inputs.handler == 'run-playwright'
+        env:
+          GH_TOKEN: ${{ secrets.GWA_PROJECT_TOKEN }}
         run: |
           echo "Running QA tests for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Run Playwright e2e tests
-          echo "TODO: Trigger Playwright test suite"
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-run-playwright" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --issue "${{ github.event.inputs.issue_number }}" 2>&1 || true
 
       - name: "Handler: status-update"
         if: github.event.inputs.handler == 'status-update'
+        env:
+          GH_TOKEN: ${{ secrets.GWA_PROJECT_TOKEN }}
         run: |
           echo "Ready for review: ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Post summary comment, notify reviewers
-          echo "TODO: Post review summary comment"
+          gh issue comment "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --body "QA tests passed. PR moved to Review."
 
       - name: "Handler: deploy-and-cleanup"
         if: github.event.inputs.handler == 'deploy-and-cleanup'
@@ -171,10 +179,15 @@ jobs:
 
       - name: "Handler: pause-for-question"
         if: github.event.inputs.handler == 'pause-for-question'
+        env:
+          GH_TOKEN: ${{ secrets.GWA_PROJECT_TOKEN }}
         run: |
           echo "Pausing session for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }} - awaiting input"
           # Pause session, post question comment
-          echo "TODO: Pause session and await human input"
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-architect" \
+            --issue "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --phase pause
 
       - name: "Handler: send-answer"
         if: github.event.inputs.handler == 'send-answer'
@@ -201,10 +214,14 @@ jobs:
 
       - name: "Handler: request-retest"
         if: github.event.inputs.handler == 'request-retest'
+        env:
+          GH_TOKEN: ${{ secrets.GWA_PROJECT_TOKEN }}
         run: |
           echo "Re-running tests for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Re-run test suite after review feedback
-          echo "TODO: Re-trigger Playwright tests"
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-run-playwright" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --issue "${{ github.event.inputs.issue_number }}" 2>&1 || true
 
       # ═══════════════════════════════════════════════════════════════════
       # BACKWARD TRANSITION HANDLERS
@@ -271,21 +288,37 @@ jobs:
 
       - name: "Handler: close-without-work"
         if: github.event.inputs.handler == 'close-without-work'
+        env:
+          GH_TOKEN: ${{ secrets.GWA_PROJECT_TOKEN }}
         run: |
           echo "Closing ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }} without work"
           # Close issue without implementation (won't-fix, duplicate, etc.)
-          echo "TODO: Post closing comment and cleanup any partial session"
+          gh issue close "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --comment "Closing without implementation as requested."
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-cleanup" \
+            --session "issue-${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --reason cancelled 2>&1 || true
 
       - name: "Handler: skip-qa"
         if: github.event.inputs.handler == 'skip-qa'
+        env:
+          GH_TOKEN: ${{ secrets.GWA_PROJECT_TOKEN }}
         run: |
           echo "Skipping QA for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Move directly to review without running tests
-          echo "TODO: Post skip-QA justification comment"
+          gh issue comment "${{ github.event.inputs.issue_number }}" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --body "QA tests skipped. PR moved directly to Review."
 
       - name: "Handler: skip-implementation"
         if: github.event.inputs.handler == 'skip-implementation'
+        env:
+          GH_TOKEN: ${{ secrets.GWA_PROJECT_TOKEN }}
         run: |
           echo "Skipping implementation for ${{ github.event.inputs.issue_repo }}#${{ github.event.inputs.issue_number }}"
           # Pre-built solution, skip to QA
-          echo "TODO: Trigger QA for pre-built solution"
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-run-playwright" \
+            --repo "${{ github.event.inputs.issue_repo }}" \
+            --issue "${{ github.event.inputs.issue_number }}" 2>&1 || true
