@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.3.1] - 2026-02-19
+
+### Fixed
+
+- `k8s/gwa-runner-statefulset.yaml`: init container now chowns PVC volumes to `runner:runner` (uid/gid 1001) instead of `node:node` (1000). The previous setup made credentials unreadable to the main container on every pod restart, causing Claude to show the OAuth login screen even with valid credentials on the PVC. Also updated `fsGroup` to 1001.
+- `src/lib/claude.ts`: removed unused `chmodSync` import
+
+### Infrastructure
+
+- `gitea-registry-push` Kubernetes secret updated with fresh Docker Hub token to prevent Kaniko build failures from Docker Hub rate limiting (unauthenticated pull limit was being hit)
+
 ## [4.3.0] - 2026-02-19
 
 ### Added
