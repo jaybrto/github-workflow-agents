@@ -15,6 +15,7 @@ import { startREPL } from "./lib/repl-session.js";
 import { analyzeTaskComplexity } from "./lib/task-analyzer.js";
 import { generateComment } from "./lib/comment-generator.js";
 import { startMetricsExporter } from "./lib/metrics-exporter.js";
+import { isCredentialExpired, tryRecoverCredentials } from "./lib/credentials-manager.js";
 import { randomUUID } from "crypto";
 
 async function main() {
@@ -171,6 +172,18 @@ async function orchestrate(ctx: PRContext): Promise<void> {
     throw new Error(`Auth pre-flight failed: ${authCheck.error}`);
   }
 
+  // 0.5. Proactive token expiry check — attempt MinIO restore before starting Claude
+  if (isCredentialExpired()) {
+    log("warn", "OAuth token expired or near expiry, attempting MinIO restore");
+    const recovered = await tryRecoverCredentials();
+    if (!recovered) {
+      await postAuthStuckComment(ctx, "OAuth token is expired and no MinIO backup is available. Manual re-login required.");
+      throw new Error("Auth recovery failed: no valid credentials in MinIO");
+    }
+    claude.preloadClaudeConfig();
+    log("info", "Credentials restored from MinIO before Claude start");
+  }
+
   // 1. Ensure tmux session exists
   await withSpan("tmux.ensureSession", async () => {
     log("debug", "Ensuring tmux session");
@@ -287,11 +300,33 @@ async function orchestrate(ctx: PRContext): Promise<void> {
   const prompt = buildPrompt(ctx);
   log("debug", "Built prompt", { promptLength: prompt.length });
 
-  // 7. Execute based on mode
-  if (executionMode === "repl") {
-    await executeREPLMode(ctx, worktreePath!, prompt, session);
-  } else {
-    await executeHeadlessMode(ctx, worktreePath!, prompt, session);
+  // 7. Execute based on mode — with auth retry loop (max 2 retries)
+  const MAX_AUTH_RETRIES = 2;
+  let authRetries = 0;
+
+  while (true) {
+    try {
+      if (executionMode === "repl") {
+        await executeREPLMode(ctx, worktreePath!, prompt, session);
+      } else {
+        await executeHeadlessMode(ctx, worktreePath!, prompt, session);
+      }
+      break;
+    } catch (error) {
+      if (error instanceof ClaudeAuthError && authRetries < MAX_AUTH_RETRIES) {
+        authRetries++;
+        log("warn", `Claude auth failure, attempting MinIO credential recovery (attempt ${authRetries}/${MAX_AUTH_RETRIES})`, {
+          error: error.message.slice(0, 200),
+        });
+        db.logActivity(null, "auth_recovery_attempt", { attempt: authRetries, recovered: false }, "system");
+        const recovered = await tryRecoverCredentials();
+        db.logActivity(null, "auth_recovery_attempt", { attempt: authRetries, recovered }, "system");
+        if (!recovered) throw error;
+        claude.preloadClaudeConfig();
+        continue;
+      }
+      throw error;
+    }
   }
 }
 
@@ -510,7 +545,7 @@ async function executeHeadlessMode(
         );
 
         if (isAuthFailure) {
-          await postAuthStuckComment(ctx, result.error || "Authentication failure detected in headless output");
+          throw new ClaudeAuthError(result.error || "Authentication failure detected in headless output");
         } else {
           // Use smart comment generator for error
           const comment = await generateComment({
