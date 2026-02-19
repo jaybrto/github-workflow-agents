@@ -100,6 +100,37 @@ spec:
                   name: gwa-secrets
                   key: oauth-org-uuid
                   optional: true
+            # RabbitMQ
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: rabbitmq-url
+                  optional: true
+            # ntfy.sh push notifications
+            - name: NTFY_URL
+              value: "https://ntfy.bto.bar/gwa"
+            # MinIO for recordings
+            - name: MINIO_ENDPOINT
+              value: "minio.bto.bar:9000"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: minio-access-key
+                  optional: true
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gwa-secrets
+                  key: minio-secret-key
+                  optional: true
+            - name: MINIO_BUCKET
+              value: "gwa-recordings"
+            - name: MINIO_REGION
+              value: "us-east-1"
+            - name: MINIO_USE_SSL
+              value: "false"
             # OpenTelemetry Configuration
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://alloy.alloy.svc.cluster.local:4317"
