@@ -18,7 +18,8 @@ import {
   ensureCustomFields,
 } from "../lib/projects.js";
 import { generateComment } from "../lib/comment-generator.js";
-import { preloadClaudeConfig } from "../lib/claude.js";
+import { preloadClaudeConfig, detectAuthFailure, ClaudeAuthError } from "../lib/claude.js";
+import { isCredentialExpired, tryRecoverCredentials } from "../lib/credentials-manager.js";
 import { handleDialogIfPresent } from "../lib/dialog-handler.js";
 import { createSessionActor, persistSnapshot, getStateName } from "../lib/state-machine.js";
 import { startPaneStream } from "../lib/terminal-relay.js";
@@ -307,13 +308,66 @@ Use /handoff if you need to pause and resume later.`;
   // 10. Start Claude REPL
   log("info", "Starting Claude REPL");
   preloadClaudeConfig();
-  await tmux.sendCommand(windowNum, "claude --dangerously-skip-permissions");
 
-  // Wait for REPL to initialize
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  // Proactive: restore credentials from MinIO if token is expired
+  if (isCredentialExpired()) {
+    log("warn", "OAuth token expired before REPL start, attempting MinIO restore");
+    const recovered = await tryRecoverCredentials();
+    if (!recovered) {
+      await octokit.issues.createComment({
+        owner,
+        repo: repoName,
+        issue_number: issueNumber,
+        body: "**Auth failure:** OAuth token is expired and no MinIO backup is available. Manual re-login required.",
+      });
+      throw new Error("Auth recovery failed: no valid credentials in MinIO");
+    }
+    preloadClaudeConfig(); // re-sync after restore
+    log("info", "Credentials restored from MinIO before REPL start");
+  }
 
-  // Check for interactive dialogs blocking Claude startup
-  await handleDialogIfPresent(windowNum);
+  // Start Claude REPL with reactive auth retry (max 2 attempts)
+  const MAX_AUTH_RETRIES = 2;
+  let authRetries = 0;
+  let claudeStarted = false;
+
+  while (!claudeStarted) {
+    await tmux.sendCommand(windowNum, "claude --dangerously-skip-permissions");
+
+    // Wait for REPL to initialize
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    const paneOutput = await tmux.capturePane(windowNum, 30);
+    if (!detectAuthFailure(paneOutput)) {
+      claudeStarted = true;
+      // Check for interactive dialogs blocking Claude startup
+      await handleDialogIfPresent(windowNum);
+      break;
+    }
+
+    authRetries++;
+    if (authRetries > MAX_AUTH_RETRIES) {
+      throw new ClaudeAuthError(
+        `Claude stuck on auth screen after ${MAX_AUTH_RETRIES} recovery attempts. ` +
+        `Captured: ${paneOutput.slice(0, 300)}`
+      );
+    }
+
+    log("warn", `Auth failure detected in REPL start, attempting recovery (attempt ${authRetries})`);
+    db.logActivity(sessionId, "auth_recovery_start", { attempt: authRetries }, "system");
+
+    // Kill stuck Claude in the window, restore credentials, retry
+    await tmux.sendKeys(windowNum, "q");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const recovered = await tryRecoverCredentials();
+    db.logActivity(sessionId, "auth_recovery_result", { attempt: authRetries, recovered }, "system");
+    if (!recovered) {
+      throw new ClaudeAuthError("Auth recovery failed: no MinIO backup available");
+    }
+    preloadClaudeConfig();
+    log("info", `Credentials restored, retrying Claude start (attempt ${authRetries + 1})`);
+  }
 
   // 11. Send planning prompt
   log("info", "Sending planning prompt");
