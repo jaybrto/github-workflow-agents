@@ -2,6 +2,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
@@ -12,7 +13,21 @@ const MINIO_ENDPOINT =
 const MINIO_ACCESS_KEY = process.env.MINIO_ACCESS_KEY || "";
 const MINIO_SECRET_KEY = process.env.MINIO_SECRET_KEY || "";
 const MINIO_BUCKET = process.env.MINIO_BUCKET || "gwa-recordings";
-const CREDENTIALS_S3_KEY = "claude-auth/credentials.tar.gz";
+
+// Pod name from env (set by K8s downward API); falls back to hostname
+const POD_NAME = process.env.POD_NAME || process.env.HOSTNAME || "unknown-pod";
+
+/**
+ * S3 key for this pod's credentials backup.
+ * Each pod stores its own so any pod can serve as a fallback for another.
+ * Format: claude-auth/pods/<pod-name>/credentials.tar.gz
+ */
+function podCredentialsKey(podName: string): string {
+  return `claude-auth/pods/${podName}/credentials.tar.gz`;
+}
+
+/** Legacy single-copy key — kept for backwards compat during transition */
+const LEGACY_CREDENTIALS_S3_KEY = "claude-auth/credentials.tar.gz";
 
 function getS3Client(): S3Client {
   return new S3Client({
@@ -91,19 +106,33 @@ export async function backupCredentials(): Promise<void> {
 
     const data = readFileSync(tarPath);
     const client = getS3Client();
+    const backedUpAt = new Date().toISOString();
 
+    // Write to pod-specific path (primary)
+    const podKey = podCredentialsKey(POD_NAME);
     await client.send(
       new PutObjectCommand({
         Bucket: MINIO_BUCKET,
-        Key: CREDENTIALS_S3_KEY,
+        Key: podKey,
         Body: data,
         ContentType: "application/gzip",
-        Metadata: { "backed-up-at": new Date().toISOString() },
+        Metadata: { "backed-up-at": backedUpAt, "pod-name": POD_NAME },
+      })
+    );
+
+    // Also write to legacy single-copy path for backwards compat
+    await client.send(
+      new PutObjectCommand({
+        Bucket: MINIO_BUCKET,
+        Key: LEGACY_CREDENTIALS_S3_KEY,
+        Body: data,
+        ContentType: "application/gzip",
+        Metadata: { "backed-up-at": backedUpAt, "source-pod": POD_NAME },
       })
     );
 
     console.log(
-      "[CredentialsManager] Credentials backed up to MinIO successfully"
+      `[CredentialsManager] Credentials backed up to MinIO: ${podKey} + legacy key`
     );
   } catch (e) {
     console.warn("[CredentialsManager] Backup failed:", e);
@@ -115,63 +144,101 @@ export async function backupCredentials(): Promise<void> {
 }
 
 /**
- * Restore Claude credentials from MinIO if ~/.claude/.credentials.json is missing.
- * Called on pod startup for new pods.
+ * Try to restore credentials from a specific S3 key.
+ * Returns true on success.
  */
-export async function restoreCredentialsIfMissing(): Promise<boolean> {
-  if (existsSync(CREDENTIALS_PATH)) {
-    console.log(
-      "[CredentialsManager] Credentials already present, skipping restore"
-    );
-    syncConfigFromCredentials();
-    return true;
-  }
-
-  if (!MINIO_ACCESS_KEY || !MINIO_SECRET_KEY) {
-    console.warn(
-      "[CredentialsManager] MinIO credentials not set, cannot restore"
-    );
-    return false;
-  }
-
-  const tarPath = "/tmp/claude-credentials-restore.tar.gz";
+async function tryRestoreFromKey(
+  client: S3Client,
+  key: string,
+  label: string
+): Promise<boolean> {
+  const tarPath = `/tmp/claude-credentials-restore-${Date.now()}.tar.gz`;
   try {
-    const client = getS3Client();
     const response = await client.send(
-      new GetObjectCommand({
-        Bucket: MINIO_BUCKET,
-        Key: CREDENTIALS_S3_KEY,
-      })
+      new GetObjectCommand({ Bucket: MINIO_BUCKET, Key: key })
     );
-
     const body = response.Body;
-    if (!body) throw new Error("Empty response body");
+    if (!body) return false;
 
-    // Stream to file
     const chunks: Buffer[] = [];
     for await (const chunk of body as AsyncIterable<Uint8Array>) {
       chunks.push(Buffer.from(chunk));
     }
     writeFileSync(tarPath, Buffer.concat(chunks));
-
-    // Ensure target directory exists
     mkdirSync(CLAUDE_DIR, { recursive: true });
-
-    // Extract to home directory
     await $`tar xzf ${tarPath} -C ${HOME} 2>/dev/null`.quiet();
-
-    console.log("[CredentialsManager] Credentials restored from MinIO");
-    syncConfigFromCredentials();
+    console.log(`[CredentialsManager] Restored from ${label} (${key})`);
     return true;
-  } catch (e) {
-    console.warn(
-      "[CredentialsManager] Restore failed (may be first pod):",
-      e
-    );
+  } catch {
     return false;
   } finally {
-    try {
-      await $`rm -f ${tarPath}`.quiet();
-    } catch {}
+    try { await $`rm -f ${tarPath}`.quiet(); } catch {}
   }
+}
+
+/**
+ * Restore Claude credentials from MinIO if ~/.claude/.credentials.json is missing.
+ *
+ * Restore priority:
+ *   1. This pod's own backup: claude-auth/pods/<POD_NAME>/credentials.tar.gz
+ *   2. Any other pod backup: claude-auth/pods/<other-pod>/credentials.tar.gz
+ *      (any pod's valid refresh token works — Claude will auto-refresh access token)
+ *   3. Legacy single-copy: claude-auth/credentials.tar.gz
+ */
+export async function restoreCredentialsIfMissing(): Promise<boolean> {
+  if (existsSync(CREDENTIALS_PATH)) {
+    console.log("[CredentialsManager] Credentials already present, syncing config");
+    syncConfigFromCredentials();
+    return true;
+  }
+
+  if (!MINIO_ACCESS_KEY || !MINIO_SECRET_KEY) {
+    console.warn("[CredentialsManager] MinIO credentials not set, cannot restore");
+    return false;
+  }
+
+  const client = getS3Client();
+
+  // 1. Try own pod's backup first
+  const ownKey = podCredentialsKey(POD_NAME);
+  if (await tryRestoreFromKey(client, ownKey, `own pod ${POD_NAME}`)) {
+    syncConfigFromCredentials();
+    return true;
+  }
+
+  // 2. Try other pods' backups — list all under claude-auth/pods/
+  try {
+    const list = await client.send(
+      new ListObjectsV2Command({
+        Bucket: MINIO_BUCKET,
+        Prefix: "claude-auth/pods/",
+      })
+    );
+
+    const otherKeys = (list.Contents ?? [])
+      .map((obj) => obj.Key ?? "")
+      .filter((k) => k.endsWith("credentials.tar.gz") && k !== ownKey)
+      // Sort by LastModified descending (most recent first) if available
+      .sort();
+
+    for (const key of otherKeys) {
+      const podLabel = key.split("/")[2] ?? "unknown";
+      console.log(`[CredentialsManager] Trying fallback from pod: ${podLabel}`);
+      if (await tryRestoreFromKey(client, key, `fallback pod ${podLabel}`)) {
+        syncConfigFromCredentials();
+        return true;
+      }
+    }
+  } catch (e) {
+    console.warn("[CredentialsManager] Failed to list pod backups:", e);
+  }
+
+  // 3. Try legacy single-copy as last resort
+  if (await tryRestoreFromKey(client, LEGACY_CREDENTIALS_S3_KEY, "legacy backup")) {
+    syncConfigFromCredentials();
+    return true;
+  }
+
+  console.warn("[CredentialsManager] No credentials found in MinIO (first pod deployment)");
+  return false;
 }
