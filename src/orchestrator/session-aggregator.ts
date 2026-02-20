@@ -192,6 +192,34 @@ export class SessionAggregator {
       }>;
   }
 
+  /** Get recent activity across all sessions */
+  getRecentActivity(limit = 10): Array<{
+    session_id: string;
+    routing_key: string;
+    payload: unknown;
+    created_at: number;
+  }> {
+    const rows = this.db
+      .query(
+        `SELECT session_id, routing_key, payload, created_at FROM activity_feed
+         ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(limit) as Array<{
+        session_id: string;
+        routing_key: string;
+        payload: string | null;
+        created_at: number;
+      }>;
+
+    return rows.map((row) => {
+      let payload: unknown = null;
+      if (row.payload) {
+        try { payload = JSON.parse(row.payload); } catch { payload = row.payload; }
+      }
+      return { session_id: row.session_id, routing_key: row.routing_key, payload, created_at: row.created_at };
+    });
+  }
+
   /** Get all pod health info */
   getPodHealth(): PodHealth[] {
     return Array.from(this.pods.values());

@@ -58,6 +58,32 @@ export function createRestApi(deps: RestApiDeps) {
         });
       }
 
+      // GET /dashboard
+      if (method === "GET" && segments[0] === "dashboard") {
+        const sessions = aggregator.getSessions();
+        const byState: Record<string, number> = {};
+        for (const s of sessions) {
+          byState[s.state] = (byState[s.state] ?? 0) + 1;
+        }
+        const mem = process.memoryUsage();
+        return json({
+          timestamp: new Date().toISOString(),
+          uptime: process.uptime(),
+          memory: {
+            rssBytes: mem.rss,
+            heapTotalBytes: mem.heapTotal,
+            heapUsedBytes: mem.heapUsed,
+          },
+          sessions: {
+            total: sessions.length,
+            byState,
+          },
+          pods: aggregator.getPodHealth(),
+          projects: provisioner.getProjectHealthSummaries(),
+          recentActivity: aggregator.getRecentActivity(10),
+        });
+      }
+
       // -----------------------------------------------------------------------
       // Session endpoints (existing)
       // -----------------------------------------------------------------------
