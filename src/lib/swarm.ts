@@ -530,7 +530,7 @@ export async function sendToWorker(
   return withSpan("swarm.sendToWorker", async (span) => {
     span.setAttribute("swarm.window", window);
 
-    await tmux.sendKeys(window, command);
+    await tmux.sendCommand(window, command);
     log("debug", "Sent command to worker", { window });
   });
 }
@@ -560,8 +560,8 @@ export async function startWorker(
 
     // Start Claude with prompt file reference instead of inline content
     await sendToWorker(window, "claude --dangerously-skip-permissions");
-    // Wait for REPL to initialize
-    await Bun.sleep(2000);
+    // Wait for REPL to initialize (3s matches repl-session.ts timing)
+    await Bun.sleep(3000);
     // Send command to read the prompt file
     await sendToWorker(window, `Read ${promptFile} and follow the instructions.`);
 
