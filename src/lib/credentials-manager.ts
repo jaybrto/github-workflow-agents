@@ -227,6 +227,25 @@ async function downloadAndExtractBundle(s3Key: string, s3Bucket?: string): Promi
   }
 }
 
+/**
+ * Read the current access token from on-disk credentials, falling back to env var.
+ * Use this at Claude subprocess spawn time to get the freshest token —
+ * the env var may be stale if credentials were refreshed after pod startup.
+ */
+export function getAccessToken(): string | undefined {
+  try {
+    if (existsSync(getCredentialsPath())) {
+      const raw = readFileSync(getCredentialsPath(), "utf-8");
+      const creds = JSON.parse(raw);
+      const diskToken = creds?.claudeAiOauth?.accessToken || creds?.oauthToken;
+      if (diskToken) return diskToken;
+    }
+  } catch {
+    // Fall through to env var
+  }
+  return process.env.CLAUDE_CODE_OAUTH_TOKEN;
+}
+
 /** Update process.env.CLAUDE_CODE_OAUTH_TOKEN from on-disk credentials */
 function updateEnvFromCredentials(): void {
   try {

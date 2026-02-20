@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import type { ClaudeStreamEvent } from "./types.js";
 import { withSpan, Metrics, log } from "./telemetry.js";
-import { syncConfigFromCredentials } from "./credentials-manager.js";
+import { syncConfigFromCredentials, getAccessToken } from "./credentials-manager.js";
 
 // ============================================================================
 // AUTH FAILURE DETECTION
@@ -51,13 +51,13 @@ export function detectAuthFailure(output: string): boolean {
  * Does NOT make API calls — just checks env vars exist.
  */
 export function checkAuthEnvironment(): { ok: boolean; error?: string } {
-  const hasOAuth = !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const hasOAuth = !!getAccessToken();
   const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
 
   if (!hasOAuth && !hasApiKey) {
     return {
       ok: false,
-      error: "Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set",
+      error: "No Claude credentials found (no CLAUDE_CODE_OAUTH_TOKEN, no on-disk credentials, no ANTHROPIC_API_KEY)",
     };
   }
 
@@ -311,8 +311,9 @@ async function runClaudeInternal(options: ClaudeOptions): Promise<ClaudeResult> 
     SHELL: process.env.SHELL,
     TERM: process.env.TERM || "xterm-256color",
     // Claude authentication (required)
+    // Read token from disk at spawn time — env var may be stale after credential refresh
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-    CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    CLAUDE_CODE_OAUTH_TOKEN: getAccessToken(),
     // Git operations
     GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME,
     GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL,
