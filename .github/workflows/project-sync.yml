@@ -323,3 +323,17 @@ jobs:
           kubectl exec "$POD" -- "$GWA_BIN/gwa-run-playwright" \
             --repo "${{ github.event.inputs.issue_repo }}" \
             --issue "${{ github.event.inputs.issue_number }}" 2>&1 || true
+
+      # ═══════════════════════════════════════════════════════════════════
+      # INFRASTRUCTURE HANDLERS
+      # ═══════════════════════════════════════════════════════════════════
+
+      - name: "Handler: provision-environment"
+        if: |
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.handler == 'provision-environment'
+        run: |
+          echo "Starting environment provisioning on $POD"
+          kubectl exec "$POD" -- "$GWA_BIN/gwa-provision-environment" \
+            --phase start \
+            --pod "$POD"

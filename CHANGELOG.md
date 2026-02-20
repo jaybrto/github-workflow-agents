@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.11.0] - 2026-02-20
+
+### Added
+- `gwa-provision-environment` CLI binary with three phases (start, complete, refresh) for on-demand credential re-provisioning
+- Orchestrator REST endpoints: `POST /provision-environment/start`, `/complete`, `/refresh` and `GET /provision-environment/status`
+- `provision-environment` handler in project-sync.yml workflow
+- ntfy.sh notifications with OAuth URL when manual authentication is needed
+- Automatic refresh of stuck auth windows on running pods without disrupting healthy sessions
+
 ## [4.10.2] - 2026-02-20
 
 ### Fixed
