@@ -213,7 +213,17 @@ async function runImplementationPhase(
     }
 
     const planContent = readFileSync(planPath, "utf-8");
-    const tasks = parsePlanTasks(planContent);
+    let tasks = parsePlanTasks(planContent);
+
+    // If plan.md didn't yield tasks, try tasks.md (Claude often writes tasks in a separate file)
+    if (tasks.length === 0) {
+      const tasksPath = `${worktreePath}/.plans/issue-${issueNumber}/tasks.md`;
+      if (existsSync(tasksPath)) {
+        const tasksContent = readFileSync(tasksPath, "utf-8");
+        tasks = parsePlanTasks(tasksContent);
+        log("info", "Fell back to tasks.md for task parsing", { taskCount: tasks.length });
+      }
+    }
 
     log("info", "Loaded plan with tasks", { taskCount: tasks.length });
 
@@ -336,14 +346,13 @@ function parsePlanTasks(planContent: string): Array<{
     validation: string[];
   }> = [];
 
-  // Match task definitions
+  // Strategy 1: YAML-block format (#### Task N: Name + ```yaml```)
   const taskMatches = planContent.matchAll(/#### Task \d+: (.+?)\n\n```yaml\n([\s\S]*?)```/g);
 
   for (const match of taskMatches) {
     const name = match[1];
     const yaml = match[2];
 
-    // Parse YAML-like content (simplified parsing)
     const taskId = extractYamlValue(yaml, "task_id") || `task-${tasks.length + 1}`;
     const description = extractYamlBlock(yaml, "description");
     const skills = extractYamlArray(yaml, "skills");
@@ -357,14 +366,40 @@ function parsePlanTasks(planContent: string): Array<{
       name,
       description,
       skills,
-      scope: {
-        files,
-        description: extractYamlBlock(yaml, "description"),
-      },
-      dependencies: {
-        blockedBy,
-        blocks,
-      },
+      scope: { files, description: extractYamlBlock(yaml, "description") },
+      dependencies: { blockedBy, blocks },
+      validation,
+    });
+  }
+
+  if (tasks.length > 0) return tasks;
+
+  // Strategy 2: Markdown heading format (## Task N — Name or ## Task N: Name)
+  // Split on ## Task headings and parse each section
+  const mdSections = planContent.split(/^## Task \d+\s*[—–:-]\s*/m).slice(1);
+
+  for (const section of mdSections) {
+    const nameMatch = section.match(/^(.+?)(?:\n|$)/);
+    const name = nameMatch?.[1]?.replace(/\s*\(.*?\)\s*$/, "").trim() || `Task ${tasks.length + 1}`;
+
+    // Extract files from **File:** or **Files:** lines
+    const fileMatches = section.matchAll(/\*\*Files?\*\*:\s*`([^`]+)`/g);
+    const files = [...fileMatches].map((m) => m[1]);
+
+    // Extract acceptance criteria from - [ ] lines
+    const validation = [...section.matchAll(/^- \[[ x]\]\s*(.+)$/gm)].map((m) => m[1]);
+
+    // Extract description: everything between the name and first sub-heading or acceptance criteria
+    const descMatch = section.match(/\n\n([\s\S]*?)(?=\n\*\*Acceptance|$)/);
+    const description = descMatch?.[1]?.trim() || section.slice(0, 200).trim();
+
+    tasks.push({
+      taskId: `task-${tasks.length + 1}`,
+      name,
+      description,
+      skills: [],
+      scope: { files, description },
+      dependencies: { blockedBy: [], blocks: [] },
       validation,
     });
   }
