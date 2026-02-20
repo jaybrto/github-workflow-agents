@@ -224,7 +224,7 @@ export function ensureAgentTasksTable(): void {
 export function createAgentTask(task: Omit<AgentTask, "createdAt">): void {
   const db = getDatabase();
   db.run(
-    `INSERT INTO agent_tasks (
+    `INSERT OR REPLACE INTO agent_tasks (
       id, session_id, agent_type, task_id, name, description, status,
       tmux_window, skills, scope, dependencies, validation, progress,
       result, created_at, started_at, completed_at
