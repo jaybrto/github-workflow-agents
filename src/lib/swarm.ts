@@ -636,11 +636,16 @@ export async function startWorker(
       await sendToWorker(window, "claude --dangerously-skip-permissions");
       await Bun.sleep(3000);
 
-      // Check if Claude is stuck on auth/login screen
+      // First, try to dismiss any known dialogs (login method, OAuth browser flow, etc.)
+      // The dialog handler can dismiss "Browser didn't open" with Escape and
+      // "Select login method" with Enter, allowing Claude to proceed with cached creds.
+      await handleDialogIfPresent(window);
+      await Bun.sleep(2000);
+
+      // Now check if Claude is still stuck on auth/login screen
       const paneText = await tmux.capturePane(window, 30);
       if (!detectAuthFailure(paneText)) {
-        // Not on auth screen — handle any other dialogs and break
-        await handleDialogIfPresent(window);
+        // Claude got past auth — we're good
         break;
       }
 
