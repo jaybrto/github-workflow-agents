@@ -61,6 +61,11 @@ const KNOWN_DIALOGS: Array<{
     keys: ["Enter"],
     reason: "Selecting default theme (dark mode)",
   },
+  {
+    pattern: /Select login method.*Claude account with subscription/is,
+    keys: ["Enter"],
+    reason: "Selecting Claude account with subscription login",
+  },
 ];
 
 const SYSTEM_PROMPT = `You are monitoring a terminal where Claude Code CLI is starting up.

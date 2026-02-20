@@ -13,6 +13,7 @@ import * as tmux from "./tmux.js";
 import { withSpan, Metrics, log } from "./telemetry.js";
 import { getAccessToken } from "./credentials-manager.js";
 import { preloadClaudeConfig } from "./claude.js";
+import { handleDialogIfPresent } from "./dialog-handler.js";
 import {
   getProject,
   getProjectItem,
@@ -390,6 +391,19 @@ export async function createSwarmSession(
     // Ensure tables exist
     ensureAgentTasksTable();
 
+    // Pre-load Claude config to prevent first-run dialogs
+    preloadClaudeConfig();
+
+    // Propagate auth env vars into the tmux session so new windows inherit them
+    const oauthToken = getAccessToken() || process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    if (oauthToken) {
+      await tmux.setEnvironment("CLAUDE_CODE_OAUTH_TOKEN", oauthToken);
+    }
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (apiKey) {
+      await tmux.setEnvironment("ANTHROPIC_API_KEY", apiKey);
+    }
+
     // Create tmux window for architect
     const architectWindow = await tmux.createWindow(
       `issue-${issueNumber}-architect`,
@@ -574,6 +588,8 @@ export async function startWorker(
     await sendToWorker(window, "claude --dangerously-skip-permissions");
     // Wait for REPL to initialize (3s matches repl-session.ts timing)
     await Bun.sleep(3000);
+    // Handle any first-run dialogs (login method, theme, trust project, etc.)
+    await handleDialogIfPresent(window);
     // Send command to read the prompt file
     await sendToWorker(window, `Read ${promptFile} and follow the instructions.`);
 
