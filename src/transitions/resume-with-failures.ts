@@ -12,7 +12,7 @@ import * as tmux from "../lib/tmux.js";
 import * as db from "../lib/db.js";
 import { restoreActor, persistSnapshot, getStateName, canTransition } from "../lib/state-machine.js";
 import { preloadClaudeConfig, detectAuthFailure, ClaudeAuthError } from "../lib/claude.js";
-import { isCredentialExpired, tryRecoverCredentials, provisionFromOrchestrator } from "../lib/credentials-manager.js";
+import { isCredentialExpired, tryRecoverCredentials, provisionFromOrchestrator, getAccessToken } from "../lib/credentials-manager.js";
 import { handleDialogIfPresent } from "../lib/dialog-handler.js";
 import { getOctokit } from "../lib/github.js";
 
@@ -154,6 +154,13 @@ async function resumeWithFailures(issueNumber: number): Promise<void> {
         preloadClaudeConfig();
         log("info", "Credentials restored from MinIO before QA resume");
       }
+    }
+
+    // Ensure tmux session has the fresh token from disk (not the stale K8s env var)
+    const freshToken = getAccessToken();
+    if (freshToken) {
+      await tmux.sendKeys(windowNum!, `export CLAUDE_CODE_OAUTH_TOKEN='${freshToken}'\n`);
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
 
     // Start Claude REPL with resume

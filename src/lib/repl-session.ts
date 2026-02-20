@@ -16,6 +16,7 @@ import {
 import { getDatabase } from "./db.js";
 import { log, withSpan, Metrics } from "./telemetry.js";
 import { ClaudeAuthError, detectAuthFailure, preloadClaudeConfig } from "./claude.js";
+import { getAccessToken } from "./credentials-manager.js";
 import { handleDialogIfPresent, ClaudeDialogError } from "./dialog-handler.js";
 
 // ============================================================================
@@ -199,6 +200,13 @@ export async function startREPL(
 
       // Pre-load Claude config to prevent first-run dialogs
       preloadClaudeConfig();
+
+      // Ensure tmux session has the fresh token from disk (not the stale K8s env var)
+      const freshToken = getAccessToken();
+      if (freshToken) {
+        await sendKeys(tmuxWindow, `export CLAUDE_CODE_OAUTH_TOKEN='${freshToken}'\n`);
+        await Bun.sleep(200);
+      }
 
       // Start Claude in interactive mode (no --print flag)
       await sendCommand(tmuxWindow, "claude");

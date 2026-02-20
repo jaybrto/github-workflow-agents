@@ -19,7 +19,7 @@ import {
 } from "../lib/projects.js";
 import { generateComment } from "../lib/comment-generator.js";
 import { preloadClaudeConfig, detectAuthFailure, ClaudeAuthError } from "../lib/claude.js";
-import { isCredentialExpired, tryRecoverCredentials, provisionFromOrchestrator } from "../lib/credentials-manager.js";
+import { isCredentialExpired, tryRecoverCredentials, provisionFromOrchestrator, getAccessToken } from "../lib/credentials-manager.js";
 import { handleDialogIfPresent } from "../lib/dialog-handler.js";
 import { createSessionActor, persistSnapshot, getStateName } from "../lib/state-machine.js";
 import { startPaneStream } from "../lib/terminal-relay.js";
@@ -340,6 +340,13 @@ Use /handoff if you need to pause and resume later.`;
       preloadClaudeConfig();
       log("info", "Credentials restored from MinIO before REPL start");
     }
+  }
+
+  // Ensure tmux session has the fresh token from disk (not the stale K8s env var)
+  const freshToken = getAccessToken();
+  if (freshToken) {
+    await tmux.sendKeys(windowNum, `export CLAUDE_CODE_OAUTH_TOKEN='${freshToken}'\n`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
   // Start Claude REPL with reactive auth retry (max 2 attempts)
