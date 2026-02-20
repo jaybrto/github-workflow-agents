@@ -484,3 +484,65 @@ export function getActiveSessionCount(): number {
 
   return result.count;
 }
+
+// ============================================
+// Provision Session Operations
+// ============================================
+
+export function ensureProvisionSessionsTable(): void {
+  const db = getDatabase();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS provision_sessions (
+      id TEXT PRIMARY KEY,
+      pod_name TEXT NOT NULL,
+      tmux_window INTEGER,
+      oauth_url TEXT,
+      kubectl_command TEXT,
+      status TEXT NOT NULL DEFAULT 'started',
+      bundle_id TEXT,
+      s3_key TEXT,
+      created_at INTEGER DEFAULT (unixepoch()),
+      completed_at INTEGER
+    );
+  `);
+}
+
+export function getProvisionSession(id: string): Record<string, unknown> | null {
+  const db = getDatabase();
+  return db.query("SELECT * FROM provision_sessions WHERE id = ?").get(id) as Record<string, unknown> | null;
+}
+
+export function getLatestProvisionSession(): Record<string, unknown> | null {
+  const db = getDatabase();
+  return db.query("SELECT * FROM provision_sessions ORDER BY created_at DESC LIMIT 1").get() as Record<string, unknown> | null;
+}
+
+export function upsertProvisionSession(session: {
+  id: string;
+  podName: string;
+  tmuxWindow?: number;
+  oauthUrl?: string;
+  kubectlCommand?: string;
+  status: string;
+  bundleId?: string;
+  s3Key?: string;
+}): void {
+  const db = getDatabase();
+  db.run(
+    `INSERT OR REPLACE INTO provision_sessions
+      (id, pod_name, tmux_window, oauth_url, kubectl_command, status, bundle_id, s3_key, created_at, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM provision_sessions WHERE id = ?), unixepoch()), ?)`,
+    [
+      session.id,
+      session.podName,
+      session.tmuxWindow ?? null,
+      session.oauthUrl ?? null,
+      session.kubectlCommand ?? null,
+      session.status,
+      session.bundleId ?? null,
+      session.s3Key ?? null,
+      session.id,
+      session.status === "complete" || session.status === "failed" ? Math.floor(Date.now() / 1000) : null,
+    ]
+  );
+}

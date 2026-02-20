@@ -213,3 +213,17 @@ export interface CredentialHistoryEntry {
   bundleCreatedAt?: number;
   bundleExpiredAt?: number;
 }
+
+/** Provision environment session — tracks interactive auth + bundling flow */
+export interface ProvisionSession {
+  id: string;
+  podName: string;
+  tmuxWindow: number | null;
+  oauthUrl: string | null;
+  kubectlCommand: string | null;
+  status: "started" | "waiting_for_auth" | "bundling" | "complete" | "failed";
+  bundleId: string | null;
+  s3Key: string | null;
+  createdAt: number;
+  completedAt: number | null;
+}
