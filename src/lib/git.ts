@@ -40,6 +40,10 @@ export function getWorktreePath(pr: number): string {
   return `${WORKTREES_PATH}/pr-${pr}`;
 }
 
+export function getIssueWorktreePath(issueNumber: number): string {
+  return `${WORKTREES_PATH}/issue-${issueNumber}`;
+}
+
 export async function createWorktree(
   pr: number,
   branch: string

@@ -132,7 +132,10 @@ async function runPlanningPhase(
     await git.fetchAll();
 
     let worktreePath: string;
-    if (await git.worktreeExists(issueNumber)) {
+    const issueWorktreePath = git.getIssueWorktreePath(issueNumber);
+    if (existsSync(issueWorktreePath)) {
+      worktreePath = issueWorktreePath;
+    } else if (await git.worktreeExists(issueNumber)) {
       await git.updateWorktree(issueNumber, branchName);
       worktreePath = git.getWorktreePath(issueNumber);
     } else {
@@ -196,8 +199,13 @@ async function runImplementationPhase(
     // 1. Get or create swarm session
     const session = await swarm.createSwarmSession(issueNumber, `${owner}/${repo}`, "implementation");
 
-    // 2. Load plan file
-    const worktreePath = git.getWorktreePath(issueNumber);
+    // 2. Load plan file — check issue worktree first (start-planning uses issue-{N}),
+    //    then fall back to pr-{N} worktree
+    const issueWorktreePath = git.getIssueWorktreePath(issueNumber);
+    const prWorktreePath = git.getWorktreePath(issueNumber);
+    const worktreePath = existsSync(`${issueWorktreePath}/.plans/issue-${issueNumber}/plan.md`)
+      ? issueWorktreePath
+      : prWorktreePath;
     const planPath = `${worktreePath}/.plans/issue-${issueNumber}/plan.md`;
 
     if (!existsSync(planPath)) {
