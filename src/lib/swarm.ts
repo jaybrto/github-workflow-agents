@@ -404,6 +404,23 @@ export async function createSwarmSession(
       await tmux.setEnvironment("ANTHROPIC_API_KEY", apiKey);
     }
 
+    // Warmup: run a Claude auth check to prime TUI state after pod restart.
+    // The first TUI launch always hits the OAuth browser flow; subsequent launches work.
+    // We use `claude auth status` which is non-interactive and primes the same state.
+    try {
+      const proc = Bun.spawn(["claude", "auth", "status"], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: oauthToken || "" },
+      });
+      await proc.exited;
+      log("info", "Claude auth warmup complete");
+    } catch (e) {
+      log("warn", "Claude auth warmup failed, continuing", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+
     // Create tmux window for architect
     const architectWindow = await tmux.createWindow(
       `issue-${issueNumber}-architect`,
