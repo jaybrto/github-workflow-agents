@@ -11,6 +11,8 @@
 import { getDatabase, logActivity, getSession } from "./db.js";
 import * as tmux from "./tmux.js";
 import { withSpan, Metrics, log } from "./telemetry.js";
+import { getAccessToken } from "./credentials-manager.js";
+import { preloadClaudeConfig } from "./claude.js";
 import {
   getProject,
   getProjectItem,
@@ -557,6 +559,16 @@ export async function startWorker(
     // SECURITY: Write prompt to temp file to avoid shell injection via user-controlled content
     const promptFile = `/tmp/gwa-worker-prompt-${config.taskId}-${Date.now()}.md`;
     await Bun.write(promptFile, prompt);
+
+    // Pre-load Claude config to prevent first-run dialogs
+    preloadClaudeConfig();
+
+    // Ensure worker window has a fresh OAuth token
+    const freshToken = getAccessToken();
+    if (freshToken) {
+      await tmux.sendKeys(window, `export CLAUDE_CODE_OAUTH_TOKEN='${freshToken}'\n`);
+      await Bun.sleep(200);
+    }
 
     // Start Claude with prompt file reference instead of inline content
     await sendToWorker(window, "claude --dangerously-skip-permissions");
