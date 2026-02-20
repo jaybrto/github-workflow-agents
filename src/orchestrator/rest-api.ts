@@ -247,6 +247,108 @@ export function createRestApi(deps: RestApiDeps) {
         }
       }
 
+      // -----------------------------------------------------------------------
+      // Provision Environment endpoints
+      // -----------------------------------------------------------------------
+
+      // POST /provision-environment/start
+      if (method === "POST" && segments[0] === "provision-environment" && segments[1] === "start") {
+        if (!checkApiKey(request)) return json({ error: "Unauthorized" }, 401);
+
+        const body = (await request.json()) as { podName?: string };
+        const podName = body.podName || "gwa-runner-0";
+
+        try {
+          const result = Bun.spawnSync(
+            ["kubectl", "exec", podName, "--", "/usr/local/bin/gwa-provision-environment", "--phase", "start", "--pod", podName],
+            { stdout: "pipe", stderr: "pipe", timeout: 30000 }
+          );
+
+          const stdout = new TextDecoder().decode(result.stdout);
+          const stderr = new TextDecoder().decode(result.stderr);
+
+          if (result.exitCode !== 0) {
+            return json({ error: "Start phase failed", stderr: stderr.slice(0, 500) }, 500);
+          }
+
+          return json({ status: "started", output: stdout.slice(0, 1000) });
+        } catch (e) {
+          return json({ error: String(e) }, 500);
+        }
+      }
+
+      // POST /provision-environment/complete
+      if (method === "POST" && segments[0] === "provision-environment" && segments[1] === "complete") {
+        if (!checkApiKey(request)) return json({ error: "Unauthorized" }, 401);
+
+        const body = (await request.json()) as { sessionId?: string; podName?: string };
+        const podName = body.podName || "gwa-runner-0";
+        const sessionArgs = body.sessionId ? ["--session-id", body.sessionId] : [];
+
+        try {
+          const result = Bun.spawnSync(
+            ["kubectl", "exec", podName, "--", "/usr/local/bin/gwa-provision-environment", "--phase", "complete", ...sessionArgs],
+            { stdout: "pipe", stderr: "pipe", timeout: 30000 }
+          );
+
+          const stdout = new TextDecoder().decode(result.stdout);
+          const stderr = new TextDecoder().decode(result.stderr);
+
+          if (result.exitCode !== 0) {
+            return json({ error: "Complete phase failed", stderr: stderr.slice(0, 500) }, 500);
+          }
+
+          return json({ status: "complete", output: stdout.slice(0, 1000) });
+        } catch (e) {
+          return json({ error: String(e) }, 500);
+        }
+      }
+
+      // POST /provision-environment/refresh
+      if (method === "POST" && segments[0] === "provision-environment" && segments[1] === "refresh") {
+        if (!checkApiKey(request)) return json({ error: "Unauthorized" }, 401);
+
+        const body = (await request.json()) as { podName: string };
+        if (!body.podName) return json({ error: "podName required" }, 400);
+
+        try {
+          const result = Bun.spawnSync(
+            ["kubectl", "exec", body.podName, "--", "/usr/local/bin/gwa-provision-environment", "--phase", "refresh", "--pod", body.podName],
+            { stdout: "pipe", stderr: "pipe", timeout: 60000 }
+          );
+
+          const stdout = new TextDecoder().decode(result.stdout);
+          const stderr = new TextDecoder().decode(result.stderr);
+
+          if (result.exitCode !== 0) {
+            return json({ error: "Refresh phase failed", stderr: stderr.slice(0, 500) }, 500);
+          }
+
+          return json({ status: "refreshed", output: stdout.slice(0, 1000) });
+        } catch (e) {
+          return json({ error: String(e) }, 500);
+        }
+      }
+
+      // GET /provision-environment/status
+      if (method === "GET" && segments[0] === "provision-environment" && segments[1] === "status") {
+        if (!checkApiKey(request)) return json({ error: "Unauthorized" }, 401);
+
+        // Query the runner pod's DB for latest provision session
+        try {
+          const result = Bun.spawnSync(
+            ["kubectl", "exec", "gwa-runner-0", "--", "sqlite3", "-json", "/home/runner/.claude/gwa.db",
+             "SELECT * FROM provision_sessions ORDER BY created_at DESC LIMIT 1"],
+            { stdout: "pipe", stderr: "pipe", timeout: 10000 }
+          );
+          const stdout = new TextDecoder().decode(result.stdout).trim();
+          const sessions = stdout ? JSON.parse(stdout) : [];
+          return json(sessions[0] || { status: "idle" });
+        } catch {
+          return json({ status: "idle" });
+        }
+      }
+
       return json({ error: "Not found" }, 404);
     } catch (error) {
       console.error(`[RestAPI] Error handling ${method} /${segments.join("/")}:`, error);
