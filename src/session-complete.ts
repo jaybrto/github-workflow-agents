@@ -11,6 +11,7 @@ import { parseArgs } from "util";
 import * as db from "./lib/db.js";
 import * as github from "./lib/github.js";
 import { captureScreenshot, toMarkdownImage } from "./lib/screenshot.js";
+import { generateComment } from "./lib/comment-generator.js";
 
 interface SessionCompleteArgs {
   pr: number;
@@ -122,14 +123,30 @@ async function main() {
           Metrics.recordDbOperation("updateSessionStatus", true);
         });
 
-        // Step 3: Post completion summary to GitHub PR
-        const body = `**Claude completed work**
+        // Step 3: Update the lifecycle status comment or post a new one
+        const session = db.getSessionByPR(args.repo, args.pr);
+        const statusCommentId = session?.status_comment_id;
 
-${args.summary}${screenshotMarkdown}`;
+        const completionComment = await generateComment({
+          type: "session_complete",
+          sessionId: session?.id || `pr-${args.pr}`,
+          summary: args.summary + screenshotMarkdown,
+          startedAt: session?.started_at ?? undefined,
+          completedAt: Math.floor(Date.now() / 1000),
+        });
 
-        await withSpan("github.postPRComment", async () => {
-          await github.postPRComment(owner, repoName, args.pr, body);
-          Metrics.recordGitHubApiCall("postPRComment", true);
+        await withSpan("github.updateOrPostComment", async () => {
+          if (statusCommentId) {
+            // Update the existing lifecycle comment
+            await github.updateComment(owner, repoName, statusCommentId, completionComment.body);
+            Metrics.recordGitHubApiCall("issues.updateComment", true);
+            log("info", "Updated lifecycle status comment", { commentId: statusCommentId });
+          } else {
+            // No status comment saved — fall back to posting a new one
+            await github.postPRComment(owner, repoName, args.pr, completionComment.body);
+            Metrics.recordGitHubApiCall("postPRComment", true);
+            log("info", "Posted new completion comment (no status comment ID found)");
+          }
         });
 
         success = true;

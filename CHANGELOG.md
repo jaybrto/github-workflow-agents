@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.9.0] - 2026-02-20
+
+### Added
+- **Lifecycle status comment tracking** — sessions always post a status comment on start and update the same comment on completion, replacing the pattern of separate start/complete comments
+  - `schema.sql` / `src/lib/db.ts`: added `status_comment_id` column with auto-migration
+  - `src/lib/github.ts`: added `updateComment()` method
+  - `src/lib/comment-generator.ts`: added `SessionCompleteInput` type and `generateSessionCompleteComment()` template with duration calculation
+  - `src/transitions/start-planning.ts`: saves comment ID after posting REPL start comment
+  - `src/orchestrate.ts`: saves comment ID in REPL mode
+  - `src/session-complete.ts`: updates status comment instead of posting a new one
+  - `src/transitions/deploy-and-cleanup.ts`: uses lifecycle comment pattern for issue completion
+
 ## [4.8.0] - 2026-02-20
 
 ### Added

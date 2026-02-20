@@ -92,6 +92,15 @@ export function initDatabase(): Database {
     );
   }
 
+  // Migrate: add status_comment_id if missing (v4.8)
+  const cols = db
+    .query("PRAGMA table_info(sessions)")
+    .all() as { name: string }[];
+  if (!cols.some((c) => c.name === "status_comment_id")) {
+    db.run("ALTER TABLE sessions ADD COLUMN status_comment_id INTEGER");
+    console.log("[DB] Migrated: added status_comment_id column");
+  }
+
   return db;
 }
 
@@ -124,7 +133,8 @@ function createMinimalSchema(db: Database): void {
       error_message TEXT,
       project_item_id TEXT,
       xstate_snapshot TEXT,
-      xstate_schema_version INTEGER DEFAULT 1
+      xstate_schema_version INTEGER DEFAULT 1,
+      status_comment_id INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS questions (
@@ -226,6 +236,8 @@ export interface Session {
   // XState integration (v4.0)
   xstate_snapshot: string | null;
   xstate_schema_version: number | null;
+  // Lifecycle comment tracking (v4.8)
+  status_comment_id: number | null;
 }
 
 export function getSession(sessionId: string): Session | null {

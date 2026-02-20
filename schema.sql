@@ -48,7 +48,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 
     -- XState integration (v4.0)
     xstate_snapshot TEXT,             -- Serialized XState actor snapshot
-    xstate_schema_version INTEGER DEFAULT 1
+    xstate_schema_version INTEGER DEFAULT 1,
+
+    -- Lifecycle comment tracking (v4.8)
+    status_comment_id INTEGER         -- GitHub comment ID for lifecycle updates
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);

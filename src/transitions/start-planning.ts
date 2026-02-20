@@ -397,7 +397,7 @@ Use /handoff if you need to pause and resume later.`;
   await Bun.write(tempFile, planningPrompt);
   await tmux.sendCommand(windowNum, `Read ${tempFile} and follow the instructions.`);
 
-  // 12. Post REPL start comment to GitHub issue
+  // 12. Post REPL start comment to GitHub issue and save comment ID for lifecycle updates
   try {
     const comment = await generateComment({
       type: "repl_start",
@@ -406,13 +406,17 @@ Use /handoff if you need to pause and resume later.`;
       tmuxAttachCommand: `tmux attach -t gwa-work:${windowNum}`,
       trigger: "Planning started",
     });
-    await octokit.issues.createComment({
+    const { data: postedComment } = await octokit.issues.createComment({
       owner,
       repo: repoName,
       issue_number: issueNumber,
       body: comment.body,
     });
-    log("info", "Posted REPL start comment to issue");
+    // Save comment ID so completion can update the same comment
+    db.updateSessionStatus(sessionId, "running", {
+      status_comment_id: postedComment.id,
+    });
+    log("info", "Posted REPL start comment to issue", { commentId: postedComment.id });
   } catch (error) {
     log("warn", "Failed to post start comment", { error: String(error) });
   }

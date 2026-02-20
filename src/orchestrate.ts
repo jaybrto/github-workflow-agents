@@ -399,12 +399,19 @@ async function executeREPLMode(
         trigger: ctx.trigger,
       });
 
-      await github.postPRComment(ctx.owner, ctx.repoName, ctx.pr, comment.body);
+      const { id: statusCommentId } = await github.postPRComment(ctx.owner, ctx.repoName, ctx.pr, comment.body);
       Metrics.recordGitHubApiCall("postPRComment", true);
+
+      // Save comment ID so completion can update the same comment
+      const sessionId = existingSession?.id || `pr-${ctx.pr}`;
+      db.updateSessionStatus(sessionId, "running", {
+        status_comment_id: statusCommentId,
+      });
 
       log("info", "REPL session started, orchestrator exiting", {
         sessionId: replResult.session.sessionId,
         tmuxWindow: replResult.session.tmuxWindow,
+        statusCommentId,
       });
 
       // REPL mode: Orchestrator exits here. Claude runs in background.

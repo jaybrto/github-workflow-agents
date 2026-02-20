@@ -110,6 +110,34 @@ export async function postPRComment(
   );
 }
 
+export async function updateComment(
+  owner: string,
+  repo: string,
+  commentId: number,
+  body: string
+): Promise<void> {
+  return withSpan(
+    "github.issues.updateComment",
+    async (span) => {
+      span.setAttribute("github.owner", owner);
+      span.setAttribute("github.repo", repo);
+      span.setAttribute("github.comment.id", commentId);
+      span.setAttribute("github.comment.length", body.length);
+      span.setAttribute("http.method", "PATCH");
+
+      const client = getOctokit();
+      await client.issues.updateComment({
+        owner,
+        repo,
+        comment_id: commentId,
+        body,
+      });
+
+      Metrics.recordGitHubApiCall("issues.updateComment", true);
+    }
+  );
+}
+
 export async function postQuestion(
   owner: string,
   repo: string,

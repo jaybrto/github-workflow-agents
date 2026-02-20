@@ -9,9 +9,10 @@ import { parseArgs } from "util";
 import { existsSync } from "fs";
 import { unlink } from "fs/promises";
 import { withSpan, shutdown as shutdownTelemetry, log } from "../lib/telemetry.js";
-import { getOctokit } from "../lib/github.js";
+import { getOctokit, updateComment } from "../lib/github.js";
 import * as tmux from "../lib/tmux.js";
 import * as db from "../lib/db.js";
+import { generateComment } from "../lib/comment-generator.js";
 import { getSessionScreenshots } from "../lib/screenshot.js";
 import { stopPaneStream } from "../lib/terminal-relay.js";
 import { restoreActor, persistSnapshot, getStateName, canTransition } from "../lib/state-machine.js";
@@ -259,34 +260,38 @@ async function deployAndCleanup(issueNumber: number, repo: string): Promise<void
     durationHours: durationResult?.hours || 0,
   };
 
-  // 8. Post completion summary to issue
-  const completionComment = `## Issue Completed
+  // 8. Update or post completion summary to issue
+  const summaryParts = [
+    `Issue completed and merged.`,
+    ``,
+    `**Session Statistics:** ${stats.commits} commits, ${stats.toolCalls} tool calls, ${stats.questions} questions, ${stats.durationHours}h duration.`,
+    screenshotsDeleted > 0 ? `Cleaned up ${screenshotsDeleted} screenshots.` : "",
+    prNumber ? `PR #${prNumber} has been merged.` : "",
+  ].filter(Boolean).join("\n");
 
-This issue has been automatically completed by Claude.
+  const statusCommentId = session?.status_comment_id;
 
-### Session Statistics
-| Metric | Value |
-|--------|-------|
-| Commits | ${stats.commits} |
-| Tool Calls | ${stats.toolCalls} |
-| Questions Asked | ${stats.questions} |
-| Duration | ${stats.durationHours} hours |
-
-### Resources Cleaned Up
-- [x] Tmux window destroyed
-- [x] Git worktree removed
-- [x] Session marked complete
-${screenshotsDeleted > 0 ? `- [x] ${screenshotsDeleted} screenshots cleaned up` : ""}
-
-${prNumber ? `PR #${prNumber} has been merged.` : ""}`;
+  const completionComment = await generateComment({
+    type: "session_complete",
+    sessionId,
+    summary: summaryParts,
+    startedAt: session?.started_at ?? undefined,
+    completedAt: Math.floor(Date.now() / 1000),
+  });
 
   try {
-    await octokit.issues.createComment({
-      owner,
-      repo: repoName,
-      issue_number: issueNumber,
-      body: completionComment,
-    });
+    if (statusCommentId) {
+      await updateComment(owner, repoName, statusCommentId, completionComment.body);
+      log("info", "Updated lifecycle status comment", { commentId: statusCommentId });
+    } else {
+      await octokit.issues.createComment({
+        owner,
+        repo: repoName,
+        issue_number: issueNumber,
+        body: completionComment.body,
+      });
+      log("info", "Posted new completion comment (no status comment ID found)");
+    }
 
     // Close the issue
     await octokit.issues.update({

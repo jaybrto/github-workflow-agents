@@ -49,12 +49,23 @@ export interface ProgressInput {
   tasksTotal?: number;
 }
 
+// v4.8 - Session lifecycle completion
+export interface SessionCompleteInput {
+  type: "session_complete";
+  sessionId: string;
+  summary: string;
+  startedAt?: number;    // epoch seconds
+  completedAt?: number;  // epoch seconds
+  screenshotMarkdown?: string;
+}
+
 export type CommentInput =
   | REPLStartInput
   | HeadlessCompleteInput
   | ErrorInput
   | QuestionInput
-  | ProgressInput;
+  | ProgressInput
+  | SessionCompleteInput;
 
 export interface GeneratedComment {
   body: string;
@@ -140,6 +151,42 @@ function generateProgressComment(input: ProgressInput): string {
     const pct = Math.round((completed / input.tasksTotal) * 100);
     const progressBar = "█".repeat(Math.floor(pct / 10)) + "░".repeat(10 - Math.floor(pct / 10));
     comment += `\n**Progress:** ${progressBar} ${completed}/${input.tasksTotal} tasks (${pct}%)\n`;
+  }
+
+  return comment;
+}
+
+function generateSessionCompleteComment(input: SessionCompleteInput): string {
+  let duration = "";
+  if (input.startedAt && input.completedAt) {
+    const seconds = input.completedAt - input.startedAt;
+    if (seconds >= 3600) {
+      duration = `${(seconds / 3600).toFixed(1)}h`;
+    } else if (seconds >= 60) {
+      duration = `${Math.round(seconds / 60)}m`;
+    } else {
+      duration = `${seconds}s`;
+    }
+  }
+
+  let comment = `**Claude completed work**
+
+| Detail | Value |
+|--------|-------|
+| Session ID | \`${input.sessionId}\` |
+| Status | Completed |`;
+
+  if (duration) {
+    comment += `\n| Duration | ${duration} |`;
+  }
+
+  comment += `
+
+**Summary:**
+${input.summary}`;
+
+  if (input.screenshotMarkdown) {
+    comment += `\n\n${input.screenshotMarkdown}`;
   }
 
   return comment;
@@ -319,6 +366,13 @@ export async function generateComment(
           }
           return {
             body: generateProgressComment(input),
+            usedAI: false,
+          };
+
+        case "session_complete":
+          span.setAttribute("comment.session_id", input.sessionId);
+          return {
+            body: generateSessionCompleteComment(input),
             usedAI: false,
           };
 
