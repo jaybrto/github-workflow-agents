@@ -94,6 +94,9 @@ export class EnvironmentProvisioner {
         organization_uuid TEXT,
         billing_type TEXT DEFAULT 'stripe_subscription',
         display_name TEXT DEFAULT 'GWA',
+        scopes TEXT,
+        subscription_type TEXT,
+        rate_limit_tier TEXT,
         source TEXT NOT NULL,
         pushed_by TEXT,
         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -120,6 +123,21 @@ export class EnvironmentProvisioner {
       CREATE INDEX IF NOT EXISTS idx_creds_project
         ON project_credentials(project_id, expires_at);
     `);
+
+    // Migrate existing DBs: add new columns if missing
+    const cols = this.db
+      .query("PRAGMA table_info(project_credentials)")
+      .all() as { name: string }[];
+    const colNames = new Set(cols.map((c) => c.name));
+    if (!colNames.has("scopes")) {
+      this.db.run("ALTER TABLE project_credentials ADD COLUMN scopes TEXT");
+    }
+    if (!colNames.has("subscription_type")) {
+      this.db.run("ALTER TABLE project_credentials ADD COLUMN subscription_type TEXT");
+    }
+    if (!colNames.has("rate_limit_tier")) {
+      this.db.run("ALTER TABLE project_credentials ADD COLUMN rate_limit_tier TEXT");
+    }
 
     console.log("[EnvironmentProvisioner] Schema initialized");
   }
@@ -281,8 +299,9 @@ export class EnvironmentProvisioner {
     const now = Math.floor(Date.now() / 1000);
     this.db.run(
       `INSERT INTO project_credentials (id, project_id, access_token, refresh_token, expires_at,
-         account_uuid, email_address, organization_uuid, billing_type, display_name, source, pushed_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'push', ?, ?)`,
+         account_uuid, email_address, organization_uuid, billing_type, display_name,
+         scopes, subscription_type, rate_limit_tier, source, pushed_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'push', ?, ?)`,
       [
         id,
         projectId,
@@ -294,6 +313,9 @@ export class EnvironmentProvisioner {
         req.organizationUuid ?? null,
         req.billingType ?? "stripe_subscription",
         req.displayName ?? "GWA",
+        req.scopes ? JSON.stringify(req.scopes) : null,
+        req.subscriptionType ?? null,
+        req.rateLimitTier ?? null,
         pushedBy ?? null,
         now,
       ],
@@ -520,37 +542,91 @@ export class EnvironmentProvisioner {
     const configJson = JSON.stringify({ oauthToken: credential.accessToken }, null, 2);
     tarPack.entry({ name: ".config/claude/config.json" }, configJson);
 
-    // .claude.json (TUI settings) — if configured
+    // .claude.json (TUI settings) — use stored config or synthesize minimal one
+    // This file contains the oauthAccount block that Claude Code uses to display
+    // the org/subscription footer and skip account selection dialogs.
     if (project.claudeJson) {
       tarPack.entry({ name: ".claude.json" }, project.claudeJson);
+    } else {
+      const synthesized = this.buildMinimalClaudeJson(credential, project);
+      tarPack.entry({ name: ".claude.json" }, synthesized);
     }
 
-    // .claude/settings.json — if configured
+    // .claude/settings.json — use stored config or synthesize minimal headless defaults
     if (project.settingsJson) {
       tarPack.entry({ name: ".claude/settings.json" }, project.settingsJson);
+    } else {
+      const defaults = JSON.stringify({
+        skipDangerousModePermissionPrompt: true,
+        theme: "dark",
+        hasCompletedOnboarding: true,
+      }, null, 2);
+      tarPack.entry({ name: ".claude/settings.json" }, defaults);
     }
 
     tarPack.finalize();
     return done;
   }
 
-  private buildCredentialsJson(credential: ProjectCredential, project: ProjectConfig): string {
-    return JSON.stringify(
-      {
-        claudeAiOauth: {
-          accessToken: credential.accessToken,
-          refreshToken: credential.refreshToken ?? undefined,
-          expiresAt: credential.expiresAt,
-          accountUuid: credential.accountUuid ?? project.claudeAccountUuid,
-          emailAddress: credential.emailAddress ?? project.claudeEmail,
-          organizationUuid: credential.organizationUuid ?? project.claudeOrgUuid,
-          billingType: credential.billingType,
-          displayName: credential.displayName,
-        },
-      },
-      null,
-      2,
-    );
+  /**
+   * Build .credentials.json matching the format Claude Code creates from interactive login.
+   * Account metadata (accountUuid, email, org) belongs in .claude.json oauthAccount, not here.
+   */
+  private buildCredentialsJson(credential: ProjectCredential, _project: ProjectConfig): string {
+    const oauth: Record<string, unknown> = {
+      accessToken: credential.accessToken,
+      refreshToken: credential.refreshToken ?? undefined,
+      expiresAt: credential.expiresAt,
+    };
+
+    // Include scopes if available (default to standard set)
+    oauth.scopes = credential.scopes ?? [
+      "user:inference",
+      "user:mcp_servers",
+      "user:profile",
+      "user:sessions:claude_code",
+    ];
+
+    if (credential.subscriptionType) {
+      oauth.subscriptionType = credential.subscriptionType;
+    }
+    if (credential.rateLimitTier) {
+      oauth.rateLimitTier = credential.rateLimitTier;
+    }
+
+    return JSON.stringify({ claudeAiOauth: oauth }, null, 2);
+  }
+
+  /**
+   * Synthesize a minimal ~/.claude.json from credential/project metadata.
+   * Contains the oauthAccount block that Claude Code uses for org/subscription
+   * display and to skip account selection dialogs on startup.
+   */
+  private buildMinimalClaudeJson(credential: ProjectCredential, project: ProjectConfig): string {
+    const accountUuid = credential.accountUuid ?? project.claudeAccountUuid;
+    const email = credential.emailAddress ?? project.claudeEmail;
+    const orgUuid = credential.organizationUuid ?? project.claudeOrgUuid;
+
+    const minimal: Record<string, unknown> = {
+      hasCompletedOnboarding: true,
+      theme: "dark-ansi",
+      preferredNotifChannel: "notifications_disabled",
+      fileCheckpointingEnabled: false,
+    };
+
+    // Only include oauthAccount if we have the essential fields
+    if (accountUuid && email) {
+      minimal.oauthAccount = {
+        accountUuid,
+        emailAddress: email,
+        organizationUuid: orgUuid ?? undefined,
+        hasExtraUsageEnabled: true,
+        billingType: credential.billingType ?? "stripe_subscription",
+        displayName: credential.displayName ?? project.displayName ?? "GWA",
+      };
+    }
+
+    return JSON.stringify(minimal, null, 2);
   }
 
   // -------------------------------------------------------------------------
@@ -627,8 +703,9 @@ export class EnvironmentProvisioner {
 
       this.db.run(
         `INSERT INTO project_credentials (id, project_id, access_token, refresh_token, expires_at,
-           account_uuid, email_address, organization_uuid, billing_type, display_name, source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'refresh', ?)`,
+           account_uuid, email_address, organization_uuid, billing_type, display_name,
+           scopes, subscription_type, rate_limit_tier, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'refresh', ?)`,
         [
           newId,
           projectId,
@@ -640,6 +717,9 @@ export class EnvironmentProvisioner {
           oldCredential.organizationUuid ?? null,
           oldCredential.billingType,
           oldCredential.displayName,
+          oldCredential.scopes ? JSON.stringify(oldCredential.scopes) : null,
+          oldCredential.subscriptionType ?? null,
+          oldCredential.rateLimitTier ?? null,
           now,
         ],
       );
@@ -828,6 +908,10 @@ export class EnvironmentProvisioner {
   }
 
   private rowToCredential(row: Record<string, unknown>): ProjectCredential {
+    let scopes: string[] | undefined;
+    if (row.scopes) {
+      try { scopes = JSON.parse(row.scopes as string); } catch { /* ignore */ }
+    }
     return {
       id: row.id as string,
       projectId: row.project_id as string,
@@ -839,6 +923,9 @@ export class EnvironmentProvisioner {
       organizationUuid: (row.organization_uuid as string) || undefined,
       billingType: row.billing_type as string,
       displayName: row.display_name as string,
+      scopes,
+      subscriptionType: (row.subscription_type as string) || undefined,
+      rateLimitTier: (row.rate_limit_tier as string) || undefined,
       source: row.source as ProjectCredential["source"],
       pushedBy: (row.pushed_by as string) || undefined,
       createdAt: row.created_at as number,

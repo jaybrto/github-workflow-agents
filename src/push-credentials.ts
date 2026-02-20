@@ -121,6 +121,9 @@ const response = await fetch(pushUrl, {
     organizationUuid: (oauth.organizationUuid as string) || undefined,
     billingType: (oauth.billingType as string) || undefined,
     displayName: (oauth.displayName as string) || undefined,
+    scopes: (oauth.scopes as string[]) || undefined,
+    subscriptionType: (oauth.subscriptionType as string) || undefined,
+    rateLimitTier: (oauth.rateLimitTier as string) || undefined,
   }),
 });
 
@@ -136,4 +139,50 @@ console.log(`  Expires at: ${new Date(expiresAt).toISOString()}`);
 if (expiresAt > Date.now()) {
   const hoursLeft = ((expiresAt - Date.now()) / 3600000).toFixed(1);
   console.log(`  Time remaining: ${hoursLeft}h`);
+}
+
+// Also push config files (.claude.json and settings.json) to the project
+// so bundles include the complete Claude Code environment
+const claudeJsonPath = join(HOME, ".claude.json");
+const settingsPath = join(HOME, ".claude", "settings.json");
+const projectUpdateBody: Record<string, unknown> = {};
+
+if (existsSync(claudeJsonPath)) {
+  projectUpdateBody.claudeJson = readFileSync(claudeJsonPath, "utf-8");
+}
+if (existsSync(settingsPath)) {
+  projectUpdateBody.settingsJson = readFileSync(settingsPath, "utf-8");
+}
+
+// Extract account metadata from .claude.json oauthAccount for the project
+if (existsSync(claudeJsonPath)) {
+  try {
+    const claudeJson = JSON.parse(readFileSync(claudeJsonPath, "utf-8"));
+    const account = claudeJson.oauthAccount;
+    if (account) {
+      if (account.accountUuid) projectUpdateBody.claudeAccountUuid = account.accountUuid;
+      if (account.organizationUuid) projectUpdateBody.claudeOrgUuid = account.organizationUuid;
+      if (account.emailAddress) projectUpdateBody.claudeEmail = account.emailAddress;
+    }
+  } catch { /* ignore parse errors */ }
+}
+
+if (Object.keys(projectUpdateBody).length > 0) {
+  const updateResp = await fetch(projectUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(projectUpdateBody),
+  });
+  if (updateResp.ok) {
+    const pushed: string[] = [];
+    if (projectUpdateBody.claudeJson) pushed.push(".claude.json");
+    if (projectUpdateBody.settingsJson) pushed.push("settings.json");
+    if (projectUpdateBody.claudeAccountUuid) pushed.push("account metadata");
+    console.log(`  Config files pushed: ${pushed.join(", ")}`);
+  } else {
+    console.warn(`  Warning: Failed to push config files: ${updateResp.status}`);
+  }
 }

@@ -125,6 +125,12 @@ export interface ProjectCredential {
   organizationUuid?: string;
   billingType: string;
   displayName: string;
+  /** OAuth scopes granted to the token */
+  scopes?: string[];
+  /** Claude subscription type (e.g., "max", "team", "pro") */
+  subscriptionType?: string;
+  /** Rate limit tier (e.g., "default_claude_max_20x") */
+  rateLimitTier?: string;
   source: 'push' | 'refresh' | 'import';
   pushedBy?: string;
   createdAt: number;
@@ -173,6 +179,12 @@ export interface CredentialPushRequest {
   organizationUuid?: string;
   billingType?: string;
   displayName?: string;
+  /** OAuth scopes granted to the token */
+  scopes?: string[];
+  /** Claude subscription type (e.g., "max", "team", "pro") */
+  subscriptionType?: string;
+  /** Rate limit tier (e.g., "default_claude_max_20x") */
+  rateLimitTier?: string;
 }
 
 /** Credential health status for GET /projects/:id/health */

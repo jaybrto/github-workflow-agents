@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.7.0] - 2026-02-20
+
+### Fixed
+- **Bundle `.credentials.json` now matches Claude Code's native format** — includes `scopes`, `subscriptionType`, `rateLimitTier`; account metadata (`accountUuid`, `emailAddress`, `organizationUuid`) moved to `.claude.json` `oauthAccount` where it belongs
+- **Bundles always include `.claude.json` and `settings.json`** — if the project has stored configs, uses those; otherwise synthesizes minimal defaults with `oauthAccount` block from credential/project metadata and headless settings (`skipDangerousModePermissionPrompt`, `hasCompletedOnboarding`)
+- **`gwa-push-credentials` now pushes complete environment** — reads `.claude.json`, `settings.json`, and account metadata alongside credentials; one command sets up the full project config
+
+### Changed
+- `project_credentials` DB schema: added `scopes`, `subscription_type`, `rate_limit_tier` columns with automatic migration for existing databases
+- OAuth refresh flow carries forward `scopes`, `subscriptionType`, `rateLimitTier` from old credential to new
+
 ## [4.6.0] - 2026-02-19
 
 ### Added
