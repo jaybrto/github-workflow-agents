@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.10.2] - 2026-02-20
+
+### Fixed
+- Replaced subprocess `--print` auth warmup with TUI warmup in temp tmux window to fix first-worker-after-restart OAuth browser flow
+
 ## [4.10.1] - 2026-02-20
 
 ### Fixed

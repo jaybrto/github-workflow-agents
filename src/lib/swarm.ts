@@ -423,29 +423,56 @@ export async function createSwarmSession(
       await tmux.setEnvironment("ANTHROPIC_API_KEY", apiKey);
     }
 
-    // Warmup: prime the TUI auth state by running a single Claude --print call.
+    // Warmup: prime the TUI auth state by launching Claude in a temp tmux window.
     // After pod restart, the first TUI launch always hits the OAuth browser flow.
-    // A --print call with the OAuth token forces credential validation and caching
-    // so that subsequent TUI launches authenticate correctly.
+    // Running a throwaway TUI instance absorbs that first-launch behavior so all
+    // real worker windows start cleanly.
     try {
-      log("info", "Running Claude auth warmup (--print)");
-      const proc = Bun.spawn(
-        ["claude", "--print", "--dangerously-skip-permissions", "echo warmup"],
-        {
-          stdout: "pipe",
-          stderr: "pipe",
-          env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: oauthToken || "" },
-        }
-      );
-      const timeoutPromise = Bun.sleep(15000).then(() => {
-        proc.kill();
-        return "timeout";
-      });
-      const exitPromise = proc.exited.then(() => "done");
-      const result = await Promise.race([exitPromise, timeoutPromise]);
-      log("info", "Claude auth warmup complete", { result });
+      log("info", "Running TUI auth warmup in temp window");
+      const warmupWindow = await tmux.createWindow("auth-warmup", "/home/runner");
+
+      // Export token to the warmup window
+      if (oauthToken) {
+        await tmux.sendKeys(warmupWindow, `export CLAUDE_CODE_OAUTH_TOKEN='${oauthToken}'\n`);
+        await Bun.sleep(200);
+      }
+
+      // Launch Claude TUI
+      await tmux.sendCommand(warmupWindow, "claude --dangerously-skip-permissions");
+      await Bun.sleep(4000);
+
+      // Dismiss any dialogs (login method selector, OAuth browser flow, theme, trust)
+      await handleDialogIfPresent(warmupWindow);
+      await Bun.sleep(2000);
+
+      // Check if Claude got past auth
+      const warmupPane = await tmux.capturePane(warmupWindow, 30);
+      if (detectAuthFailure(warmupPane)) {
+        log("warn", "TUI warmup hit auth screen, sending Ctrl-C and retrying once");
+        // Kill stuck Claude
+        await tmux.sendKeys(warmupWindow, "C-c");
+        await Bun.sleep(500);
+        await tmux.sendKeys(warmupWindow, "C-c");
+        await Bun.sleep(1000);
+
+        // Retry once — the first attempt often primes enough state for the second
+        await tmux.sendCommand(warmupWindow, "claude --dangerously-skip-permissions");
+        await Bun.sleep(4000);
+        await handleDialogIfPresent(warmupWindow);
+        await Bun.sleep(2000);
+      }
+
+      // Exit Claude gracefully: send Escape then /exit
+      await tmux.sendKeys(warmupWindow, "Escape");
+      await Bun.sleep(300);
+      await tmux.sendCommand(warmupWindow, "/exit");
+      await Bun.sleep(1000);
+
+      // Kill the warmup window
+      await tmux.killWindow(warmupWindow);
+      log("info", "TUI auth warmup complete, temp window cleaned up");
     } catch (e) {
-      log("warn", "Claude auth warmup failed, continuing", {
+      log("warn", "TUI auth warmup failed, continuing", {
         error: e instanceof Error ? e.message : String(e),
       });
     }
