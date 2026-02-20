@@ -841,6 +841,19 @@ export class EnvironmentProvisioner {
   // Health
   // -------------------------------------------------------------------------
 
+  /** Get credential health summaries for all projects (no sensitive config data) */
+  getProjectHealthSummaries(): Array<{ id: string; displayName: string; credentialHealth: CredentialHealth }> {
+    const rows = this.db
+      .query(`SELECT id, display_name FROM projects ORDER BY display_name`)
+      .all() as Array<{ id: string; display_name: string }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      displayName: row.display_name,
+      credentialHealth: this.getCredentialHealth(row.id),
+    }));
+  }
+
   getCredentialHealth(projectId: string): CredentialHealth {
     const credential = this.getActiveCredential(projectId);
     const activeBundle = this.getActiveBundle(projectId);

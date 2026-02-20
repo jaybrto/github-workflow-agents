@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.8.0] - 2026-02-20
+
+### Added
+- **`GET /dashboard` endpoint** — public system health dashboard for the orchestrator REST API
+  - Session breakdown: total count and counts grouped by state (`idle`, `in_progress`, `blocked`, etc.)
+  - Pod health: all known runner pods with last heartbeat and healthy flag
+  - Project credential health: per-project summary of credential validity, expiry, refresh token availability, and active bundle ID (no sensitive config data exposed)
+  - Recent activity: last 10 events across all sessions with parsed payload
+  - Process stats: ISO timestamp, uptime (seconds), RSS/heap memory usage
+  - No authentication required (public, suitable for monitoring/dashboards)
+- `SessionAggregator.getRecentActivity(limit)` — queries `activity_feed` globally ordered by recency, returns parsed JSON payloads
+- `EnvironmentProvisioner.getProjectHealthSummaries()` — returns `{id, displayName, credentialHealth}[]` without exposing raw config data
+
 ## [4.7.0] - 2026-02-20
 
 ### Fixed
