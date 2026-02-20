@@ -584,12 +584,40 @@ export async function startWorker(
       await Bun.sleep(200);
     }
 
-    // Start Claude with prompt file reference instead of inline content
-    await sendToWorker(window, "claude --dangerously-skip-permissions");
-    // Wait for REPL to initialize (3s matches repl-session.ts timing)
-    await Bun.sleep(3000);
-    // Handle any first-run dialogs (login method, theme, trust project, etc.)
-    await handleDialogIfPresent(window);
+    // Start Claude with auth retry loop (first TUI after pod restart may hit login screen)
+    const MAX_AUTH_RETRIES = 2;
+    for (let attempt = 1; attempt <= MAX_AUTH_RETRIES; attempt++) {
+      await sendToWorker(window, "claude --dangerously-skip-permissions");
+      await Bun.sleep(3000);
+
+      // Handle any first-run dialogs (login method, theme, trust project, etc.)
+      await handleDialogIfPresent(window);
+      await Bun.sleep(1000);
+
+      // Check if Claude is stuck on auth/login screen
+      const paneText = await tmux.capturePane(window, 30);
+      const isAuthScreen = /Browser didn't open|Paste code here|Select login method/i.test(paneText);
+
+      if (!isAuthScreen) {
+        break; // Claude started successfully
+      }
+
+      if (attempt < MAX_AUTH_RETRIES) {
+        log("warn", "Worker hit auth screen, killing and retrying", {
+          taskId: config.taskId, window, attempt,
+        });
+        // Kill the stuck Claude and retry — second attempt typically succeeds
+        await tmux.sendKeys(window, "C-c");
+        await Bun.sleep(500);
+        await tmux.sendKeys(window, "C-c");
+        await Bun.sleep(1000);
+      } else {
+        log("error", "Worker could not get past auth screen", {
+          taskId: config.taskId, window, attempts: MAX_AUTH_RETRIES,
+        });
+      }
+    }
+
     // Send command to read the prompt file
     await sendToWorker(window, `Read ${promptFile} and follow the instructions.`);
 

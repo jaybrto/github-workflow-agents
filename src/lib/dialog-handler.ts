@@ -66,6 +66,11 @@ const KNOWN_DIALOGS: Array<{
     keys: ["Enter"],
     reason: "Selecting Claude account with subscription login",
   },
+  {
+    pattern: /Browser didn't open.*Paste code here/is,
+    keys: ["Escape"],
+    reason: "Dismissing OAuth browser flow (token already cached)",
+  },
 ];
 
 const SYSTEM_PROMPT = `You are monitoring a terminal where Claude Code CLI is starting up.
