@@ -26,6 +26,7 @@ import type {
   ProvisionResponse,
   CredentialPushRequest,
   CredentialHealth,
+  CredentialHistoryEntry,
 } from "../shared/types.js";
 import type { PushBridge } from "./push-bridge.js";
 
@@ -869,6 +870,132 @@ export class EnvironmentProvisioner {
       lastRefreshAt: lastRefreshed?.last ? lastRefreshed.last * 1000 : undefined,
       activeBundleId: activeBundle?.id,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Credential history & pruning
+  // -------------------------------------------------------------------------
+
+  getCredentialHistory(projectId: string, limit = 10): CredentialHistoryEntry[] {
+    const rows = this.db
+      .query(
+        `SELECT
+           c.id AS credential_id,
+           c.source,
+           c.pushed_by,
+           c.created_at,
+           c.expires_at,
+           c.invalidated_at,
+           c.access_token,
+           b.id AS bundle_id,
+           b.s3_key AS bundle_s3_key,
+           b.version AS bundle_version,
+           b.created_at AS bundle_created_at,
+           b.expired_at AS bundle_expired_at
+         FROM project_credentials c
+         LEFT JOIN environment_bundles b ON b.credential_id = c.id
+         WHERE c.project_id = ?
+         ORDER BY c.created_at DESC
+         LIMIT ?`,
+      )
+      .all(projectId, limit) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      credentialId: row.credential_id as string,
+      source: row.source as CredentialHistoryEntry["source"],
+      pushedBy: (row.pushed_by as string) || undefined,
+      createdAt: row.created_at as number,
+      expiresAt: row.expires_at as number,
+      invalidatedAt: (row.invalidated_at as number) || undefined,
+      tokenPrefix: (row.access_token as string).slice(0, 20) + "...",
+      bundleId: (row.bundle_id as string) || undefined,
+      bundleS3Key: (row.bundle_s3_key as string) || undefined,
+      bundleVersion: (row.bundle_version as number) || undefined,
+      bundleCreatedAt: (row.bundle_created_at as number) || undefined,
+      bundleExpiredAt: (row.bundle_expired_at as number) || undefined,
+    }));
+  }
+
+  /**
+   * Prune credentials and bundles older than maxAge (default 24h).
+   * Always keeps the most recent credential (even if older than maxAge).
+   * Returns count of pruned credentials and bundles.
+   */
+  async pruneOldCredentials(
+    projectId: string,
+    maxAgeMs = 24 * 60 * 60_000,
+  ): Promise<{ prunedCredentials: number; prunedBundles: number; deletedS3Objects: number }> {
+    const cutoffSec = Math.floor((Date.now() - maxAgeMs) / 1000);
+
+    // Find the most recent credential ID so we never prune it
+    const latest = this.db
+      .query(
+        `SELECT id FROM project_credentials
+         WHERE project_id = ?
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(projectId) as { id: string } | null;
+
+    if (!latest) {
+      return { prunedCredentials: 0, prunedBundles: 0, deletedS3Objects: 0 };
+    }
+
+    // Find old bundles to delete from S3
+    const oldBundles = this.db
+      .query(
+        `SELECT b.id, b.s3_key, b.s3_bucket
+         FROM environment_bundles b
+         JOIN project_credentials c ON b.credential_id = c.id
+         WHERE c.project_id = ?
+           AND c.created_at < ?
+           AND c.id != ?
+           AND b.cleaned_up_at IS NULL`,
+      )
+      .all(projectId, cutoffSec, latest.id) as Array<{
+      id: string;
+      s3_key: string;
+      s3_bucket: string;
+    }>;
+
+    let deletedS3Objects = 0;
+    for (const bundle of oldBundles) {
+      try {
+        await this.s3.send(
+          new DeleteObjectCommand({ Bucket: bundle.s3_bucket, Key: bundle.s3_key }),
+        );
+        deletedS3Objects++;
+      } catch (error) {
+        console.warn(`[EnvironmentProvisioner] Failed to delete S3 object ${bundle.s3_key}:`, error);
+      }
+    }
+
+    // Delete old bundles from DB
+    const bundleResult = this.db.run(
+      `DELETE FROM environment_bundles
+       WHERE credential_id IN (
+         SELECT id FROM project_credentials
+         WHERE project_id = ? AND created_at < ? AND id != ?
+       )`,
+      [projectId, cutoffSec, latest.id],
+    );
+
+    // Delete old credentials from DB
+    const credResult = this.db.run(
+      `DELETE FROM project_credentials
+       WHERE project_id = ? AND created_at < ? AND id != ?`,
+      [projectId, cutoffSec, latest.id],
+    );
+
+    const prunedCredentials = credResult.changes;
+    const prunedBundles = bundleResult.changes;
+
+    if (prunedCredentials > 0 || prunedBundles > 0) {
+      console.log(
+        `[EnvironmentProvisioner] Pruned ${prunedCredentials} credentials, ${prunedBundles} bundles, ${deletedS3Objects} S3 objects for ${projectId}`,
+      );
+    }
+
+    return { prunedCredentials, prunedBundles, deletedS3Objects };
   }
 
   // -------------------------------------------------------------------------

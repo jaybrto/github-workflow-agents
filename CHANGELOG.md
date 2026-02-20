@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.8.0] - 2026-02-20
+
+### Added
+- **`gwa-credential-history` CLI** — queries orchestrator for credential refresh history with associated MinIO bundle IDs; shows last N credentials with source (push/refresh), status, expiry, token prefix, and S3 key
+- **`GET /projects/:id/credentials/history`** — REST endpoint joining `project_credentials` and `environment_bundles` tables; supports `?limit=N` query parameter
+- **`POST /projects/:id/credentials/prune`** — deletes credentials and bundles older than 24 hours (always keeps the latest credential); cleans up S3 objects
+
+### Fixed
+- **Orchestrator deployment strategy changed to `Recreate`** — RWO PVC deadlock on every deploy caused by `RollingUpdate` trying to mount the volume on two pods simultaneously
+
 ## [4.7.0] - 2026-02-20
 
 ### Fixed

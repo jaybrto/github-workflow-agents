@@ -197,3 +197,19 @@ export interface CredentialHealth {
   lastRefreshAt?: number;
   activeBundleId?: string;
 }
+
+/** Credential history entry (credential joined with its bundle) */
+export interface CredentialHistoryEntry {
+  credentialId: string;
+  source: 'push' | 'refresh' | 'import';
+  pushedBy?: string;
+  createdAt: number;
+  expiresAt: number;
+  invalidatedAt?: number;
+  tokenPrefix: string;
+  bundleId?: string;
+  bundleS3Key?: string;
+  bundleVersion?: number;
+  bundleCreatedAt?: number;
+  bundleExpiredAt?: number;
+}

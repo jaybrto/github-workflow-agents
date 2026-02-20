@@ -1,10 +1,10 @@
 {
   "name": "github-workflow-agents",
-  "version": "4.7.0",
+  "version": "4.8.0",
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "bun run build:orchestrate && bun run build:respond && bun run build:cleanup && bun run build:debug-db && bun run build:health-check && bun run build:ask-question && bun run build:session-complete && bun run build:architect && bun run build:worker && bun run build:setup-project && bun run build:start-planning && bun run build:inject-prompt && bun run build:run-playwright && bun run build:resume-with-failures && bun run build:send-answer && bun run build:deploy-and-cleanup && bun run build:terminal-relay && bun run build:webhook && bun run build:credentials-backup && bun run build:push-credentials && bun run build:provision",
+    "build": "bun run build:orchestrate && bun run build:respond && bun run build:cleanup && bun run build:debug-db && bun run build:health-check && bun run build:ask-question && bun run build:session-complete && bun run build:architect && bun run build:worker && bun run build:setup-project && bun run build:start-planning && bun run build:inject-prompt && bun run build:run-playwright && bun run build:resume-with-failures && bun run build:send-answer && bun run build:deploy-and-cleanup && bun run build:terminal-relay && bun run build:webhook && bun run build:credentials-backup && bun run build:push-credentials && bun run build:provision && bun run build:credential-history",
     "build:orchestrate": "bun build src/orchestrate.ts --compile --outfile dist/gwa-orchestrate",
     "build:respond": "bun build src/respond.ts --compile --outfile dist/gwa-respond",
     "build:cleanup": "bun build src/cleanup.ts --compile --outfile dist/gwa-cleanup",
@@ -27,6 +27,7 @@
     "build:credentials-backup": "bun build src/credentials-backup.ts --compile --outfile dist/gwa-credentials-backup",
     "build:push-credentials": "bun build src/push-credentials.ts --compile --outfile dist/gwa-push-credentials",
     "build:provision": "bun build src/provision.ts --compile --outfile dist/gwa-provision",
+    "build:credential-history": "bun build src/credential-history.ts --compile --outfile dist/gwa-credential-history",
     "webhook": "bun run src/webhook/handler.ts",
     "test": "bun test"
   },

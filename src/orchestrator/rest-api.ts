@@ -223,6 +223,27 @@ export function createRestApi(deps: RestApiDeps) {
             const health = provisioner.getCredentialHealth(projectId);
             return json(health);
           }
+
+          // GET /projects/:id/credentials/history — credential history with bundles
+          if (method === "GET" && segments[2] === "credentials" && segments[3] === "history" && segments.length === 4) {
+            if (!checkApiKey(request)) return json({ error: "Unauthorized" }, 401);
+            const project = provisioner.getProject(projectId);
+            if (!project) return json({ error: "Project not found" }, 404);
+            const url = new URL(request.url);
+            const limit = parseInt(url.searchParams.get("limit") || "10", 10);
+            const history = provisioner.getCredentialHistory(projectId, limit);
+            return json(history);
+          }
+
+          // POST /projects/:id/credentials/prune — prune old credentials and bundles
+          if (method === "POST" && segments[2] === "credentials" && segments[3] === "prune" && segments.length === 4) {
+            if (!checkApiKey(request)) return json({ error: "Unauthorized" }, 401);
+            const project = provisioner.getProject(projectId);
+            if (!project) return json({ error: "Project not found" }, 404);
+            const body = (await request.json().catch(() => ({}))) as { maxAgeMs?: number };
+            const result = await provisioner.pruneOldCredentials(projectId, body.maxAgeMs);
+            return json(result);
+          }
         }
       }
 

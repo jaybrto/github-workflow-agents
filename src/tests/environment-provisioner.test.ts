@@ -610,12 +610,10 @@ describe("Bundle content", () => {
     expect(fileNames).toContain(".claude.json");
     expect(fileNames).toContain(".claude/settings.json");
 
-    // Verify credentials content
+    // Verify credentials content (account metadata is in .claude.json, not here)
     const creds = JSON.parse(fileContents[".claude/.credentials.json"]);
     expect(creds.claudeAiOauth.accessToken).toBe("tok-for-tar");
     expect(creds.claudeAiOauth.refreshToken).toBe("ref-for-tar");
-    expect(creds.claudeAiOauth.accountUuid).toBe("acc-1");
-    expect(creds.claudeAiOauth.emailAddress).toBe("test@tar.com");
 
     // Verify config.json
     const config = JSON.parse(fileContents[".config/claude/config.json"]);
@@ -644,13 +642,19 @@ describe("Bundle content", () => {
     const { extract } = await import("tar-stream");
 
     const fileNames: string[] = [];
+    const fileContents: Record<string, string> = {};
     await new Promise<void>((resolve, reject) => {
       const gunzip = createGunzip();
       const ex = extract();
       ex.on("entry", (header, stream, next) => {
         fileNames.push(header.name);
+        const chunks: Buffer[] = [];
+        stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+        stream.on("end", () => {
+          fileContents[header.name] = Buffer.concat(chunks).toString("utf-8");
+          next();
+        });
         stream.resume();
-        stream.on("end", next);
       });
       ex.on("finish", resolve);
       ex.on("error", reject);
@@ -658,12 +662,17 @@ describe("Bundle content", () => {
       gunzip.end(tarGzBuffer);
     });
 
-    // Only required files
+    // All 4 files always present (synthesized defaults when not configured)
     expect(fileNames).toContain(".claude/.credentials.json");
     expect(fileNames).toContain(".config/claude/config.json");
-    // Optional files omitted
-    expect(fileNames).not.toContain(".claude.json");
-    expect(fileNames).not.toContain(".claude/settings.json");
+    expect(fileNames).toContain(".claude.json");
+    expect(fileNames).toContain(".claude/settings.json");
+
+    // Verify synthesized defaults
+    const claudeJson = JSON.parse(fileContents[".claude.json"]);
+    expect(claudeJson.hasCompletedOnboarding).toBe(true);
+    const settings = JSON.parse(fileContents[".claude/settings.json"]);
+    expect(settings.skipDangerousModePermissionPrompt).toBe(true);
   });
 });
 
