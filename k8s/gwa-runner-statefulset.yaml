@@ -65,7 +65,7 @@ spec:
             - name: DB_PATH
               value: "/home/runner/.claude/gwa.db"
             - name: SCHEMA_PATH
-              value: "/home/runner/.claude/schema.sql"
+              value: "/opt/gwa/schema.sql"
             # GitHub Projects v2 config
             - name: GWA_PROJECT_OWNER_TYPE
               value: "user"

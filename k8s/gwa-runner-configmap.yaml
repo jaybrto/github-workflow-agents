@@ -61,9 +61,17 @@ data:
 
     # Initialize SQLite database
     echo "[GWA] Initializing SQLite database..."
-    if [ -f "${SCHEMA_PATH}" ] && [ ! -f "${DB_PATH}" ]; then
-      echo "[GWA] Creating database from schema..."
-      sqlite3 "${DB_PATH}" < "${SCHEMA_PATH}"
+    # Resolve schema path: prefer configured, fall back to image-bundled location
+    RESOLVED_SCHEMA="${SCHEMA_PATH}"
+    if [ ! -f "${RESOLVED_SCHEMA}" ] && [ -f "/opt/gwa/schema.sql" ]; then
+      RESOLVED_SCHEMA="/opt/gwa/schema.sql"
+    fi
+    if [ -f "${RESOLVED_SCHEMA}" ]; then
+      # Check if DB needs schema (missing config table = uninitialized)
+      if [ ! -f "${DB_PATH}" ] || ! sqlite3 "${DB_PATH}" "SELECT 1 FROM config LIMIT 1" 2>/dev/null; then
+        echo "[GWA] Creating/repairing database from schema (${RESOLVED_SCHEMA})..."
+        sqlite3 "${DB_PATH}" < "${RESOLVED_SCHEMA}"
+      fi
     fi
 
     # Provision environment from orchestrator (credentials, settings, config)
