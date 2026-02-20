@@ -31,7 +31,7 @@ import type { PushBridge } from "./push-bridge.js";
 
 // Claude OAuth endpoints
 const CLAUDE_OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
-const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e535-45a4-8c43-53e1cee47cde";
+const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
 // Timer intervals
 const REFRESH_CHECK_INTERVAL_MS = 30 * 60_000; // 30 minutes
