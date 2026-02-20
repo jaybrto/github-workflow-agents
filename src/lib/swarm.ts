@@ -11,8 +11,8 @@
 import { getDatabase, logActivity, getSession } from "./db.js";
 import * as tmux from "./tmux.js";
 import { withSpan, Metrics, log } from "./telemetry.js";
-import { getAccessToken } from "./credentials-manager.js";
-import { preloadClaudeConfig } from "./claude.js";
+import { getAccessToken, tryRecoverCredentials, isCredentialExpired, provisionFromOrchestrator } from "./credentials-manager.js";
+import { preloadClaudeConfig, detectAuthFailure } from "./claude.js";
 import { handleDialogIfPresent } from "./dialog-handler.js";
 import {
   getProject,
@@ -394,6 +394,25 @@ export async function createSwarmSession(
     // Pre-load Claude config to prevent first-run dialogs
     preloadClaudeConfig();
 
+    // Pre-flight credential check: recover from MinIO if expired
+    if (isCredentialExpired()) {
+      log("info", "Credentials expired, attempting orchestrator provision");
+      const provisioned = await provisionFromOrchestrator();
+      if (!provisioned) {
+        log("info", "Orchestrator provision failed, trying MinIO recovery");
+        const recovered = await tryRecoverCredentials();
+        if (recovered) {
+          preloadClaudeConfig();
+          log("info", "Credentials restored from MinIO before swarm start");
+        } else {
+          log("warn", "No valid credentials available - workers may fail auth");
+        }
+      } else {
+        preloadClaudeConfig();
+        log("info", "Credentials provisioned from orchestrator before swarm start");
+      }
+    }
+
     // Propagate auth env vars into the tmux session so new windows inherit them
     const oauthToken = getAccessToken() || process.env.CLAUDE_CODE_OAUTH_TOKEN;
     if (oauthToken) {
@@ -611,38 +630,62 @@ export async function startWorker(
       await Bun.sleep(200);
     }
 
-    // Start Claude with auth retry loop (first TUI after pod restart may hit login screen)
+    // Start Claude with auth retry loop using credential recovery
     const MAX_AUTH_RETRIES = 2;
     for (let attempt = 1; attempt <= MAX_AUTH_RETRIES; attempt++) {
       await sendToWorker(window, "claude --dangerously-skip-permissions");
       await Bun.sleep(3000);
 
-      // Handle any first-run dialogs (login method, theme, trust project, etc.)
-      await handleDialogIfPresent(window);
-      await Bun.sleep(1000);
-
       // Check if Claude is stuck on auth/login screen
       const paneText = await tmux.capturePane(window, 30);
-      const isAuthScreen = /Browser didn't open|Paste code here|Select login method/i.test(paneText);
-
-      if (!isAuthScreen) {
-        break; // Claude started successfully
+      if (!detectAuthFailure(paneText)) {
+        // Not on auth screen — handle any other dialogs and break
+        await handleDialogIfPresent(window);
+        break;
       }
 
-      if (attempt < MAX_AUTH_RETRIES) {
-        log("warn", "Worker hit auth screen, killing and retrying", {
-          taskId: config.taskId, window, attempt,
-        });
-        // Kill the stuck Claude and retry — second attempt typically succeeds
-        await tmux.sendKeys(window, "C-c");
-        await Bun.sleep(500);
-        await tmux.sendKeys(window, "C-c");
-        await Bun.sleep(1000);
-      } else {
-        log("error", "Worker could not get past auth screen", {
+      if (attempt >= MAX_AUTH_RETRIES) {
+        log("error", "Worker could not get past auth screen after credential recovery", {
           taskId: config.taskId, window, attempts: MAX_AUTH_RETRIES,
         });
+        break;
       }
+
+      log("warn", "Worker hit auth screen, attempting credential recovery", {
+        taskId: config.taskId, window, attempt,
+      });
+
+      // Kill stuck Claude, recover credentials, retry
+      await tmux.sendKeys(window, "C-c");
+      await Bun.sleep(500);
+      await tmux.sendKeys(window, "C-c");
+      await Bun.sleep(500);
+
+      // Try orchestrator first, then MinIO fallback
+      let recovered = await provisionFromOrchestrator();
+      if (!recovered) {
+        recovered = await tryRecoverCredentials();
+      }
+
+      if (recovered) {
+        preloadClaudeConfig();
+        // Re-export the fresh token to the tmux window
+        const refreshedToken = getAccessToken();
+        if (refreshedToken) {
+          await tmux.sendKeys(window, `export CLAUDE_CODE_OAUTH_TOKEN='${refreshedToken}'\n`);
+          await Bun.sleep(200);
+        }
+        // Also update tmux session-level env
+        await tmux.setEnvironment("CLAUDE_CODE_OAUTH_TOKEN", refreshedToken || "");
+        log("info", "Credentials recovered, retrying Claude start", {
+          taskId: config.taskId, attempt: attempt + 1,
+        });
+      } else {
+        log("error", "Credential recovery failed, retry may not succeed", {
+          taskId: config.taskId,
+        });
+      }
+      await Bun.sleep(1000);
     }
 
     // Send command to read the prompt file

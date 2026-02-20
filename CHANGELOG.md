@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.10.1] - 2026-02-20
+
+### Fixed
+- **Swarm credential recovery** — `swarm.ts` now performs a pre-flight credential expiry check in `createSwarmSession()` and uses orchestrator/MinIO credential recovery in the `startWorker()` auth retry loop instead of blind retries
+
 ## [4.10.0] - 2026-02-20
 
 ### Fixed
