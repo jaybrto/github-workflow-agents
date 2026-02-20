@@ -404,17 +404,27 @@ export async function createSwarmSession(
       await tmux.setEnvironment("ANTHROPIC_API_KEY", apiKey);
     }
 
-    // Warmup: run a Claude auth check to prime TUI state after pod restart.
-    // The first TUI launch always hits the OAuth browser flow; subsequent launches work.
-    // We use `claude auth status` which is non-interactive and primes the same state.
+    // Warmup: prime the TUI auth state by running a single Claude --print call.
+    // After pod restart, the first TUI launch always hits the OAuth browser flow.
+    // A --print call with the OAuth token forces credential validation and caching
+    // so that subsequent TUI launches authenticate correctly.
     try {
-      const proc = Bun.spawn(["claude", "auth", "status"], {
-        stdout: "pipe",
-        stderr: "pipe",
-        env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: oauthToken || "" },
+      log("info", "Running Claude auth warmup (--print)");
+      const proc = Bun.spawn(
+        ["claude", "--print", "--dangerously-skip-permissions", "echo warmup"],
+        {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: oauthToken || "" },
+        }
+      );
+      const timeoutPromise = Bun.sleep(15000).then(() => {
+        proc.kill();
+        return "timeout";
       });
-      await proc.exited;
-      log("info", "Claude auth warmup complete");
+      const exitPromise = proc.exited.then(() => "done");
+      const result = await Promise.race([exitPromise, timeoutPromise]);
+      log("info", "Claude auth warmup complete", { result });
     } catch (e) {
       log("warn", "Claude auth warmup failed, continuing", {
         error: e instanceof Error ? e.message : String(e),
