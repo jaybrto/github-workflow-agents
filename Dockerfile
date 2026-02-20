@@ -26,7 +26,10 @@ RUN mkdir -p dist && \
     bun build src/transitions/run-playwright.ts --compile --outfile dist/gwa-run-playwright && \
     bun build src/transitions/resume-with-failures.ts --compile --outfile dist/gwa-resume-with-failures && \
     bun build src/transitions/send-answer.ts --compile --outfile dist/gwa-send-answer && \
-    bun build src/transitions/deploy-and-cleanup.ts --compile --outfile dist/gwa-deploy-and-cleanup
+    bun build src/transitions/deploy-and-cleanup.ts --compile --outfile dist/gwa-deploy-and-cleanup && \
+    bun build src/provision.ts --compile --outfile dist/gwa-provision && \
+    bun build src/push-credentials.ts --compile --outfile dist/gwa-push-credentials && \
+    bun build src/credentials-backup.ts --compile --outfile dist/gwa-credentials-backup
 
 # Stage 2: Runtime image with Node.js (for Claude Code) + compiled Bun tools
 FROM node:22-bookworm-slim
@@ -77,6 +80,9 @@ COPY --from=builder /build/dist/gwa-run-playwright /usr/local/bin/
 COPY --from=builder /build/dist/gwa-resume-with-failures /usr/local/bin/
 COPY --from=builder /build/dist/gwa-send-answer /usr/local/bin/
 COPY --from=builder /build/dist/gwa-deploy-and-cleanup /usr/local/bin/
+COPY --from=builder /build/dist/gwa-provision /usr/local/bin/
+COPY --from=builder /build/dist/gwa-push-credentials /usr/local/bin/
+COPY --from=builder /build/dist/gwa-credentials-backup /usr/local/bin/
 RUN chmod +x /usr/local/bin/gwa-*
 
 # Copy SQLite schema to a location outside PVC mounts
