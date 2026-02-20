@@ -166,8 +166,8 @@ async function handleResponse(
     SessionMetrics.recordQuestionAnswered(args.repo, latencySeconds);
   }
 
-  if (session.status !== "blocked") {
-    log("info", `Session status is ${session.status}, not blocked`);
+  if (session.status !== "blocked" && session.status !== "running") {
+    log("info", `Session status is ${session.status}, not blocked or running`);
     await github.postIssueComment(
       owner,
       repoName,
@@ -176,6 +176,23 @@ async function handleResponse(
     );
     Metrics.recordGitHubApiCall("postIssueComment", true);
     return;
+  }
+
+  // For running sessions, verify tmux window is still alive before sending
+  if (session.status === "running") {
+    if (session.tmux_window === null) {
+      log("warn", "Running session has no tmux window", { sessionId: session.id });
+      await github.postIssueComment(owner, repoName, args.issue,
+        "Claude session is running but has no tmux window. Your answer has been saved.");
+      return;
+    }
+    const windowAlive = await tmux.windowExists(session.tmux_window);
+    if (!windowAlive) {
+      log("warn", "Running session tmux window is dead", { sessionId: session.id });
+      await github.postIssueComment(owner, repoName, args.issue,
+        "Claude's session window is no longer running. Your answer has been saved. A new session may need to be started.");
+      return;
+    }
   }
 
   // Update session status to running

@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.10.0] - 2026-02-20
+
+### Fixed
+- **REPL permissions prompt** — added `--dangerously-skip-permissions` to Claude launch in `repl-session.ts`, matching `start-planning.ts` and `resume-with-failures.ts`
+- **Duplicate workflow on `@claude-answer:`** — `claude-code-blocking.yml` now excludes comments containing `@claude-answer:` so only the respond workflow fires
+- **Duplicate REPL sessions on push events** — `orchestrate.ts` checks for a live tmux window before creating a new REPL; skips with `touchSession` if already running
+- **Answer delivery to running sessions** — `respond.ts` now sends answers to sessions in `running` status (not just `blocked`), with tmux liveness checks before delivery
+
+### Added
+- **Lifecycle tool instructions in REPL prompt** — `buildPrompt()` appends `gwa-session-complete` and `gwa-ask-question` usage to every prompt so Claude knows how to signal completion or ask questions
+
 ## [4.9.0] - 2026-02-20
 
 ### Added

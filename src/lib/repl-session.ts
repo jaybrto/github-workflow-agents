@@ -209,7 +209,7 @@ export async function startREPL(
       }
 
       // Start Claude in interactive mode (no --print flag)
-      await sendCommand(tmuxWindow, "claude");
+      await sendCommand(tmuxWindow, "claude --dangerously-skip-permissions");
 
       // Wait for Claude to initialize (3s to allow auth check)
       await Bun.sleep(3000);

@@ -357,6 +357,20 @@ async function executeREPLMode(
         workingDir: worktreePath,
       });
 
+      // Guard: skip if a REPL session is already running for this PR
+      if (existingSession && existingSession.tmux_window !== null) {
+        const windowAlive = await tmux.windowExists(existingSession.tmux_window);
+        if (windowAlive) {
+          log("info", "REPL session already running, skipping duplicate creation", {
+            sessionId: existingSession.id,
+            tmuxWindow: existingSession.tmux_window,
+          });
+          db.touchSession(existingSession.id);
+          span.setAttribute("repl.skipped_duplicate", true);
+          return;
+        }
+      }
+
       if (existingSession) {
         db.updateSessionStatus(existingSession.id, "running");
       }
@@ -580,19 +594,33 @@ async function executeHeadlessMode(
 }
 
 function buildPrompt(ctx: PRContext): string {
+  let taskPrompt: string;
   switch (ctx.trigger) {
     case "pr_event":
-      return `Work on PR #${ctx.pr}. Analyze the changes, ensure tests pass, and address any issues. If the PR description has specific instructions, follow them.`;
-
+      taskPrompt = `Work on PR #${ctx.pr}. Analyze the changes, ensure tests pass, and address any issues. If the PR description has specific instructions, follow them.`;
+      break;
     case "comment":
-      return `Address this feedback on PR #${ctx.pr}: ${ctx.comment || "No comment provided"}`;
-
+      taskPrompt = `Address this feedback on PR #${ctx.pr}: ${ctx.comment || "No comment provided"}`;
+      break;
     case "manual":
-      return `Resume work on PR #${ctx.pr}. Check the current state and continue where you left off.`;
-
+      taskPrompt = `Resume work on PR #${ctx.pr}. Check the current state and continue where you left off.`;
+      break;
     default:
-      return `Work on PR #${ctx.pr}.`;
+      taskPrompt = `Work on PR #${ctx.pr}.`;
   }
+
+  return `${taskPrompt}
+
+IMPORTANT — Session Lifecycle Tools:
+
+When you have finished all work on this PR:
+  Run: gwa-session-complete --pr ${ctx.pr} --repo ${ctx.repo} --summary "brief description of what was done"
+
+If you need to ask a question and wait for a human response:
+  Run: gwa-ask-question --pr ${ctx.pr} --repo ${ctx.repo} --question "your question"
+  The answer will be printed to stdout. Use it to continue your work.
+
+Do NOT exit without calling gwa-session-complete.`;
 }
 
 /**
