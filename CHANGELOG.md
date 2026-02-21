@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `scripts/e2e-health-check.sh` — minimal health check script that verifies gwa-runner-0 pod status, orchestrator /health endpoint, and prints the deployed version
+
 ## [4.11.0] - 2026-02-20
 
 ### Added
