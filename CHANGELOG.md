@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.12.0] - 2026-02-21
+
+### Changed
+- `start-planning`: Claude REPL now launches with `--model claude-opus-4-6` for planning sessions
+- `start-planning`: Replaced plan-file-writing prompt with analysis-only architect prompt; Claude now calls `gwa-planning-complete` to submit the plan instead of committing files
+- `start-planning`: Removed plan directory and template copying — worktree is used for codebase exploration only
+
 ## [4.11.0] - 2026-02-20
 
 ### Added
