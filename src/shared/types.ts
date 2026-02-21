@@ -8,6 +8,7 @@
 export enum SessionState {
   Idle = 'idle',
   Planning = 'planning',
+  PlanningComplete = 'planning_complete',
   InProgress = 'in_progress',
   QA = 'qa',
   Blocked = 'blocked',
@@ -18,6 +19,7 @@ export enum SessionState {
 // XState events - all valid transitions
 export type SessionEvent =
   | { type: 'START_PLANNING' }
+  | { type: 'PLANNING_COMPLETE' }
   | { type: 'INJECT_PROMPT' }
   | { type: 'RUN_TESTS' }
   | { type: 'STATUS_UPDATE' }

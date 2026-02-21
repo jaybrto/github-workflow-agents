@@ -70,6 +70,12 @@ export const sessionMachine = createMachine({
     },
     planning: {
       on: {
+        PLANNING_COMPLETE: {
+          target: "planningComplete",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "planning_complete");
+          },
+        },
         INJECT_PROMPT: {
           target: "inProgress",
           actions: ({ context }) => {
@@ -91,6 +97,18 @@ export const sessionMachine = createMachine({
           },
         },
         SKIP_IMPLEMENTATION: { target: "qa" },
+      },
+    },
+    planningComplete: {
+      on: {
+        INJECT_PROMPT: {
+          target: "inProgress",
+          actions: ({ context }) => {
+            captureTransitionSnapshot(context, "work_started");
+          },
+        },
+        REQUEST_REPLANNING: { target: "planning" },
+        CANCEL_SESSION: { target: "idle" },
       },
     },
     inProgress: {
@@ -395,6 +413,7 @@ export function stateNameToSessionState(stateName: string): SessionState {
   const map: Record<string, SessionState> = {
     idle: SessionState.Idle,
     planning: SessionState.Planning,
+    planningComplete: SessionState.PlanningComplete,
     inProgress: SessionState.InProgress,
     qa: SessionState.QA,
     blocked: SessionState.Blocked,

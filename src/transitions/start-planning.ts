@@ -108,7 +108,6 @@ async function startPlanningSession(
   const sessionId = `issue-${issueNumber}`;
   const branchName = `claude/issue-${issueNumber}`;
   const worktreePath = `${WORKTREES_PATH}/${sessionId}`;
-  const planDir = `${worktreePath}/.plans/${sessionId}`;
   const [owner, repoName] = repo.split("/");
 
   // Get pod name (hostname in K8s)
@@ -142,24 +141,7 @@ async function startPlanningSession(
     }
   }
 
-  // 4. Create plan directory
-  await Bun.write(`${planDir}/.gitkeep`, "");
-
-  // Copy templates if they exist
-  const templatesDir = `${REPO_PATH}/templates/plans`;
-  try {
-    const templates = ["plan.md", "checklist.md", "decisions.md", "snippets.md", "prompt.md"];
-    for (const template of templates) {
-      const src = `${templatesDir}/${template}`;
-      const dest = `${planDir}/${template}`;
-      const file = Bun.file(src);
-      if (await file.exists()) {
-        await Bun.write(dest, file);
-      }
-    }
-  } catch {
-    log("debug", "No templates to copy");
-  }
+  // 4. Worktree is for codebase exploration only — no plan files written
 
   // 5. Get issue details
   const octokit = getOctokit();
@@ -170,7 +152,7 @@ async function startPlanningSession(
   });
 
   // 6. Build planning prompt
-  const planningPrompt = `You are an architect agent creating an implementation plan.
+  const planningPrompt = `You are an architect analyzing a GitHub issue to create an implementation plan.
 
 ## Issue #${issueNumber}: ${issue.title}
 
@@ -178,37 +160,53 @@ ${issue.body || "No description provided."}
 
 ## Your Task
 
-Create a comprehensive implementation plan:
+Explore the codebase and produce a detailed implementation plan. Do not implement anything — your only output is the plan.
 
-1. **Analyze Requirements** - Extract functional and non-functional requirements
-2. **Design Solution** - Determine files to create/modify, patterns to use
-3. **Break Down into Tasks** - Create 3-7 parallelizable tasks with dependencies
-4. **Write Plan Files** - Create files in .plans/${sessionId}/
+## What to do
 
-## After Planning Complete
+1. Read and understand the requirements in the issue above
+2. Explore the codebase to understand the existing structure, patterns, and conventions
+3. Identify all files that will need to be created or modified
+4. Break the work into 3-7 concrete tasks that could be executed independently or in parallel
+5. Note any risks, ambiguities, or decisions that need to be made
 
-When you finish creating all plan files, you MUST:
+Your plan should include:
+- **Requirements Summary**: What needs to be built and why
+- **Technical Approach**: Architecture decisions, patterns to follow, key design choices
+- **Files to Modify/Create**: List each file with a brief description of changes
+- **Task Breakdown**: 3-7 tasks with clear scope and any dependencies between them
+- **Risks**: Potential issues, unknowns, or areas needing clarification
 
-1. **Commit the plan files**:
-   \`\`\`bash
-   git add .plans/
-   git commit -m "docs(plan): add implementation plan for issue #${issueNumber}"
-   \`\`\`
+## What NOT to do
 
-2. **Push to remote**:
-   \`\`\`bash
-   git push origin ${branchName}
-   \`\`\`
+- DO NOT create, modify, or delete any files in the repository
+- DO NOT run git commit, git push, or any write operations
+- DO NOT implement any code
+- This session is analysis only — read and explore, then output your plan
 
-3. **Post a summary comment** to the GitHub issue:
-   \`\`\`bash
-   gh issue comment ${issueNumber} --repo ${repo} --body "## 📋 Implementation Plan Complete
+## Asking Questions
 
-   [Include a brief summary of the plan with links to the plan files on the branch]"
-   \`\`\`
+If you need clarification on requirements before finalizing the plan, post a question:
 
-When all steps are complete, the project item will be moved to 'In Progress'.
-Use /handoff if you need to pause and resume later.`;
+\`\`\`bash
+gwa-ask-question --issue ${issueNumber} --repo ${repo} --question "Your question here"
+\`\`\`
+
+## When Planning is Complete
+
+Write your plan to a temp file first, then call the planning-complete tool:
+
+\`\`\`bash
+# Write the plan
+cat > /tmp/plan-issue-${issueNumber}.md << 'EOF'
+[Your full plan in markdown]
+EOF
+
+# Submit the plan
+gwa-planning-complete --issue ${issueNumber} --repo ${repo} --plan "$(cat /tmp/plan-issue-${issueNumber}.md)"
+\`\`\`
+
+The plan will be posted as a GitHub issue comment and the issue will be moved to the implementation queue.`;
 
   // 7. Initialize database and create session
   db.initDatabase();
@@ -354,7 +352,7 @@ Use /handoff if you need to pause and resume later.`;
   let authRetries = 0;
 
   while (true) {
-    await tmux.sendCommand(windowNum, "claude --dangerously-skip-permissions");
+    await tmux.sendCommand(windowNum, "claude --dangerously-skip-permissions --model claude-opus-4-6");
 
     // Wait for REPL to initialize
     await new Promise((resolve) => setTimeout(resolve, 3000));
