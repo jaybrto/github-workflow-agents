@@ -641,3 +641,199 @@ Expected: Binary file exists
 
 Run: `bun run typecheck`
 Expected: PASS with 0 errors
+
+---
+
+## Agent Teams Execution Plan
+
+### Team Structure
+
+- **Lead** — Coordinates phases, runs foundation tasks via subagents, spawns teammates, handles integration
+- **Teammate A: state-and-comments** — XState types/machine + comment-generator (Tasks 1 + 2)
+- **Teammate B: start-planning** — Prompt rewrite + model flag (Task 5)
+
+Tasks 3, 4, 6, 7 are sequential (Task 3 depends on A's output, Tasks 4/6/7 depend on everything) — handled by lead via subagent after teammates finish.
+
+### Phase 1: Parallel Implementation (2 Teammates)
+
+No foundation phase is needed — Tasks 1, 2, and 5 have no shared file dependencies. All three can start immediately.
+
+#### Teammate A: state-and-comments
+
+**Owns (exclusive write):**
+- `src/shared/types.ts`
+- `src/lib/state-machine.ts`
+- `src/lib/comment-generator.ts`
+
+**Reads:** Nothing shared needed beyond what it owns.
+
+**Tasks:**
+1. Add `PlanningComplete` to `SessionState` enum in `types.ts`
+2. Add `PLANNING_COMPLETE` to `SessionEvent` union in `types.ts`
+3. Add `planningComplete` state to XState machine in `state-machine.ts` with `PLANNING_COMPLETE` transition from `planning`
+4. Add `planningComplete` to `stateNameToSessionState` map
+5. Add `PlanningCompleteInput` interface and `planning_complete` case to `comment-generator.ts`
+6. Run `bun run typecheck`
+7. Commit: `feat(state): add PLANNING_COMPLETE event, planningComplete state, planning_complete comment type`
+
+#### Teammate B: start-planning
+
+**Owns (exclusive write):**
+- `src/transitions/start-planning.ts`
+
+**Reads:** Nothing shared needed.
+
+**Tasks:**
+1. Remove plan directory creation (lines 145-162)
+2. Rewrite `planningPrompt` variable — analysis-only, calls `gwa-planning-complete`, uses `gwa-ask-question`
+3. Change REPL launch from `claude --dangerously-skip-permissions` to `claude --dangerously-skip-permissions --model claude-opus-4-6`
+4. Run `bun run typecheck`
+5. Commit: `feat(planning): use Opus 4.6, plan-only prompt, call gwa-planning-complete`
+
+### Phase 2: Sequential (Lead via Subagent)
+
+After both teammates complete, the lead spawns a subagent to create the `gwa-planning-complete` CLI and wire up the build.
+
+**Task 3:** Create `src/planning-complete.ts` (new file — no conflict with any teammate's files)
+
+**Task 4:** Add `build:planning-complete` script to `package.json`, add to `build` script, add COPY line to `Dockerfile`
+
+**Task 6:** Bump version to `4.12.0` in `package.json`, update `CHANGELOG.md`
+
+**Task 7:** Run `bun run build` and `bun run typecheck` to verify everything compiles.
+
+### Phase 3: Verification (Lead)
+
+Lead runs `superpowers:verification-before-completion`:
+1. `bun run typecheck` — must pass
+2. `bun run build` — all binaries must compile
+3. `ls dist/gwa-planning-complete` — new binary exists
+
+### File Ownership Matrix (No Conflicts)
+
+| Agent | Exclusively Owns | Reads (no writes) |
+|-------|-----------------|-------------------|
+| **Lead** | `src/planning-complete.ts` (new), `package.json`, `Dockerfile`, `CHANGELOG.md` | Everything |
+| **Teammate A** | `src/shared/types.ts`, `src/lib/state-machine.ts`, `src/lib/comment-generator.ts` | — |
+| **Teammate B** | `src/transitions/start-planning.ts` | — |
+
+### Task Dependency DAG
+
+```
+Phase 1 (Parallel):
+  A: types + state-machine + comments ──┐
+  B: start-planning prompt + model ─────┤
+                                        │
+Phase 2 (Sequential, Lead):             │
+  3: planning-complete.ts (needs A) ────┤ Must complete before Phase 3
+  4: package.json + Dockerfile ─────────┤
+  6: version bump + CHANGELOG ──────────┘
+
+Phase 3 (Lead):
+  7: Build + typecheck verification
+```
+
+### Claude Code Session Setup
+
+**Prerequisites:**
+```json
+// ~/.claude/settings.json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
+**Execution steps:**
+
+1. Start Claude Code in the project directory
+2. Tell Claude: `Execute docs/plans/2026-02-21-planning-phase-redesign-impl.md following the Agent Teams Execution Plan`
+3. Claude creates a feature branch: `git checkout -b feat/planning-phase-redesign`
+4. Claude creates the task list:
+   - Task P1-A: Phase 1 Teammate A work (types, state machine, comments)
+   - Task P1-B: Phase 1 Teammate B work (start-planning prompt + model)
+   - Task P2-3: Create planning-complete.ts (blocked by P1-A)
+   - Task P2-4: Build config + Dockerfile (blocked by P2-3)
+   - Task P2-6: Version bump + CHANGELOG (blocked by P2-4)
+   - Task P3-7: Build verification (blocked by P2-6)
+5. Claude calls `TeamCreate` with team name `planning-redesign`
+6. Claude spawns 2 teammates in parallel via `Task` tool with `run_in_background: true`
+7. Claude monitors via `sleep 30` + `TaskList` polling
+8. When both teammates complete, Claude sends `shutdown_request` to each
+9. Claude spawns a subagent to implement Tasks 3, 4, 6 sequentially
+10. Claude runs Task 7 verification directly
+11. Claude commits all changes
+
+### Teammate Prompt: A (state-and-comments)
+
+```
+You are Teammate A on team planning-redesign. Your job is to add the PLANNING_COMPLETE
+event type, planningComplete XState state, and planning_complete comment type.
+
+**File Ownership:**
+- You EXCLUSIVELY own: src/shared/types.ts, src/lib/state-machine.ts, src/lib/comment-generator.ts
+- Do NOT touch any other files
+
+**Tasks:**
+
+1. In src/shared/types.ts:
+   - Add PlanningComplete = 'planning_complete' to SessionState enum (after Planning)
+   - Add { type: 'PLANNING_COMPLETE' } to SessionEvent union (after START_PLANNING)
+
+2. In src/lib/state-machine.ts:
+   - In the planning state's `on` object, add PLANNING_COMPLETE transition targeting "planningComplete"
+     with action: captureTransitionSnapshot(context, "planning_complete")
+   - Add new planningComplete state after planning with transitions:
+     INJECT_PROMPT -> inProgress (with captureTransitionSnapshot "work_started")
+     REQUEST_REPLANNING -> planning
+     CANCEL_SESSION -> idle
+   - In stateNameToSessionState map, add: planningComplete: SessionState.PlanningComplete
+
+3. In src/lib/comment-generator.ts:
+   - Add PlanningCompleteInput interface: { type: "planning_complete"; sessionId: string; startedAt?: number; completedAt?: number }
+   - Add PlanningCompleteInput to CommentInput union
+   - Add generatePlanningCompleteComment function (same duration logic as generateSessionCompleteComment but with "Planning complete" header and "Moving to In Progress" footer)
+   - Add "planning_complete" case to the switch in generateComment
+
+**Validation:** Run bun run typecheck — must pass with 0 errors
+
+**When complete:** Commit with message "feat(state): add PLANNING_COMPLETE event, planningComplete state, planning_complete comment type"
+Then mark your task as completed and send a completion message.
+```
+
+### Teammate Prompt: B (start-planning)
+
+```
+You are Teammate B on team planning-redesign. Your job is to modify the planning
+prompt and add the Opus model flag to the Claude REPL launch.
+
+**File Ownership:**
+- You EXCLUSIVELY own: src/transitions/start-planning.ts
+- Do NOT touch any other files
+
+**Tasks:**
+
+1. Remove plan directory creation — delete the section that creates .plans/ directory
+   and copies templates (approximately lines 145-162). Replace with a comment:
+   // 4. Worktree is for codebase exploration only — no plan files written
+
+2. Rewrite the planningPrompt variable. The new prompt must:
+   - Tell Claude it's an architect analyzing a GitHub issue
+   - Include the issue number, title, and body
+   - Instruct Claude to explore the codebase and produce a plan
+   - Explicitly prohibit file creation, commits, and pushes (analysis only)
+   - Tell Claude to use gwa-ask-question for clarifying questions
+   - Tell Claude to call gwa-planning-complete with the plan markdown when done
+   - Include writing plan to a temp file first for reliable shell escaping
+
+3. Change the Claude REPL launch command from:
+   claude --dangerously-skip-permissions
+   to:
+   claude --dangerously-skip-permissions --model claude-opus-4-6
+
+**Validation:** Run bun run typecheck — must pass with 0 errors
+
+**When complete:** Commit with message "feat(planning): use Opus 4.6, plan-only prompt, call gwa-planning-complete"
+Then mark your task as completed and send a completion message.
+```
