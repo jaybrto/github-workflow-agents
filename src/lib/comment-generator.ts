@@ -59,13 +59,21 @@ export interface SessionCompleteInput {
   screenshotMarkdown?: string;
 }
 
+export interface PlanningCompleteInput {
+  type: "planning_complete";
+  sessionId: string;
+  startedAt?: number;    // epoch seconds
+  completedAt?: number;  // epoch seconds
+}
+
 export type CommentInput =
   | REPLStartInput
   | HeadlessCompleteInput
   | ErrorInput
   | QuestionInput
   | ProgressInput
-  | SessionCompleteInput;
+  | SessionCompleteInput
+  | PlanningCompleteInput;
 
 export interface GeneratedComment {
   body: string;
@@ -188,6 +196,38 @@ ${input.summary}`;
   if (input.screenshotMarkdown) {
     comment += `\n\n${input.screenshotMarkdown}`;
   }
+
+  return comment;
+}
+
+function generatePlanningCompleteComment(input: PlanningCompleteInput): string {
+  let duration = "";
+  if (input.startedAt && input.completedAt) {
+    const seconds = input.completedAt - input.startedAt;
+    if (seconds >= 3600) {
+      duration = `${(seconds / 3600).toFixed(1)}h`;
+    } else if (seconds >= 60) {
+      duration = `${Math.round(seconds / 60)}m`;
+    } else {
+      duration = `${seconds}s`;
+    }
+  }
+
+  let comment = `**Planning complete**
+
+| Detail | Value |
+|--------|-------|
+| Session ID | \`${input.sessionId}\` |
+| Status | Planning Complete |`;
+
+  if (duration) {
+    comment += `\n| Duration | ${duration} |`;
+  }
+
+  comment += `
+
+The plan has been posted as a comment below.
+Moving this item to "In Progress" will start implementation.`;
 
   return comment;
 }
@@ -373,6 +413,13 @@ export async function generateComment(
           span.setAttribute("comment.session_id", input.sessionId);
           return {
             body: generateSessionCompleteComment(input),
+            usedAI: false,
+          };
+
+        case "planning_complete":
+          span.setAttribute("comment.session_id", input.sessionId);
+          return {
+            body: generatePlanningCompleteComment(input),
             usedAI: false,
           };
 
