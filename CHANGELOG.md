@@ -6,6 +6,14 @@
 - `start-planning`: Claude REPL now launches with `--model claude-opus-4-6` for planning sessions
 - `start-planning`: Replaced plan-file-writing prompt with analysis-only architect prompt; Claude now calls `gwa-planning-complete` to submit the plan instead of committing files
 - `start-planning`: Removed plan directory and template copying — worktree is used for codebase exploration only
+- Planning phase now uses Opus 4.6 model for architectural analysis
+- Planning prompt is analysis-only — Claude explores the codebase and produces a plan without creating files
+- Planning completion posts the plan as a GitHub issue comment instead of writing plan files
+
+### Added
+- `gwa-planning-complete` CLI tool — posts plan comment, updates status comment, kills tmux window, removes worktree
+- `PLANNING_COMPLETE` XState event and `planningComplete` state for planning phase lifecycle
+- `planning_complete` comment type in comment generator
 
 ## [4.11.0] - 2026-02-20
 
