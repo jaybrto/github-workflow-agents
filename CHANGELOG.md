@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.12.2] - 2026-02-24
+
+### Fixed
+- `start-planning`: Add 2s settle delay after `❯` prompt detection and retry loop (3 attempts) with pane verification for planning prompt delivery
+
 ## [4.12.1] - 2026-02-24
 
 ### Fixed

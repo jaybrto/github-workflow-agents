@@ -1,6 +1,6 @@
 {
   "name": "github-workflow-agents",
-  "version": "4.12.1",
+  "version": "4.12.2",
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",

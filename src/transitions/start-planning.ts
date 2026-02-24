@@ -414,12 +414,36 @@ The plan will be posted as a GitHub issue comment and the issue will be moved to
     log("info", `Credentials restored, retrying Claude start (attempt ${authRetries + 1})`);
   }
 
-  // 11. Send planning prompt
+  // 11. Send planning prompt with delivery verification
   log("info", "Sending planning prompt");
-  // Write prompt to temp file for reliable sending
   const tempFile = `/tmp/gwa-prompt-${sessionId}.md`;
   await Bun.write(tempFile, planningPrompt);
-  await tmux.sendCommand(windowNum, `Read ${tempFile} and follow the instructions.`);
+
+  const promptCommand = `Read ${tempFile} and follow the instructions.`;
+  const PROMPT_MAX_RETRIES = 3;
+  const PROMPT_SETTLE_MS = 2000; // let REPL input handler fully initialize after ❯ renders
+
+  for (let attempt = 1; attempt <= PROMPT_MAX_RETRIES; attempt++) {
+    // Wait for the REPL input handler to settle before sending keys
+    await new Promise((resolve) => setTimeout(resolve, PROMPT_SETTLE_MS));
+
+    await tmux.sendCommand(windowNum, promptCommand);
+
+    // Verify the prompt text appeared in the pane
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const verifyOutput = await tmux.capturePane(windowNum, 40);
+
+    if (verifyOutput.includes("gwa-prompt") || verifyOutput.includes("follow the instructions")) {
+      log("info", `Planning prompt delivered on attempt ${attempt}`);
+      break;
+    }
+
+    if (attempt < PROMPT_MAX_RETRIES) {
+      log("warn", `Planning prompt not visible in pane (attempt ${attempt}/${PROMPT_MAX_RETRIES}), retrying`);
+    } else {
+      log("error", `Planning prompt delivery failed after ${PROMPT_MAX_RETRIES} attempts`);
+    }
+  }
 
   // 12. Post REPL start comment to GitHub issue and save comment ID for lifecycle updates
   try {
