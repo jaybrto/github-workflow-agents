@@ -143,42 +143,52 @@ validation:
   - Components adapt to WindowSizeClass (larger on tablet)
 ```
 
-### Task 3: Responsive Scaffolds
+### Task 3: Responsive Scaffolds (Material 3 Adaptive — No Custom Code)
 
 ```yaml
 task_id: "f02-003"
-complexity: medium
+complexity: low  # Reduced — library handles all the heavy lifting
 scope:
-  files:
-    - android/app/src/main/kotlin/bar/bto/gwa/ui/layout/AdaptiveScaffold.kt
-    - android/app/src/main/kotlin/bar/bto/gwa/ui/layout/MasterDetailLayout.kt
-    - android/app/src/main/kotlin/bar/bto/gwa/ui/layout/WindowSizeUtils.kt
+  files: []  # No custom scaffold files needed!
   description: |
-    AdaptiveScaffold:
-    - Wraps the entire app
-    - Phone: Scaffold with BottomNavigation
-    - Tablet: Scaffold with NavigationRail + content area
-    - Uses calculateWindowSizeClass() from Material 3
+    REPLACED BY Material 3 Adaptive Library components.
+    No custom AdaptiveScaffold, MasterDetailLayout, or WindowSizeUtils needed.
 
-    MasterDetailLayout:
-    - Phone: Full-screen list → full-screen detail (navigation)
-    - Tablet: Side-by-side list (1/3) + detail (2/3)
-    - Animated transitions between panes
-    - Used for Sessions list → Session detail
+    The following library components replace all custom responsive code:
+
+    NavigationSuiteScaffold (material3-adaptive-navigation-suite:1.4.0):
+    - Replaces custom AdaptiveScaffold
+    - Automatically renders BottomNavigationBar / NavigationRail / NavigationDrawer
+    - Reads currentWindowAdaptiveInfo() internally — zero manual breakpoint math
+    - See: ui/navigation/MainScaffold.kt
+
+    NavigableListDetailPaneScaffold (adaptive-navigation:1.2.0):
+    - Replaces custom MasterDetailLayout
+    - Phone: Single pane with predictive back gesture support
+    - Tablet: Persistent split-pane (list left, detail right)
+    - Built-in AnimatedPane transitions between panes
+    - Built-in back stack management with ThreePaneScaffoldNavigator
+    - See: ui/users/UsersScreen.kt (and future session screens)
+
+    LazyVerticalGrid with GridCells.Adaptive:
+    - Used for dashboard metric cards
+    - Maximizes 2.5K display real estate on tablet
+    - Gracefully stacks on phone
+    - No custom code needed — standard Compose Foundation
 
     WindowSizeUtils:
-    - Extension functions for WindowSizeClass
-    - isCompact, isMedium, isExpanded helpers
-    - Adaptive padding/spacing values
+    - NOT NEEDED. Material 3 Adaptive components read window size internally.
+    - If edge cases arise, use currentWindowAdaptiveInfo() directly.
 
 dependencies:
   blocked_by: ["f02-001"]
   blocks: []
 
 validation:
-  - AdaptiveScaffold shows BottomNav on phone, Rail on tablet
-  - MasterDetailLayout splits correctly at tablet breakpoint
-  - Smooth transitions when orientation changes
+  - NavigationSuiteScaffold shows BottomNav on phone, Rail on tablet
+  - NavigableListDetailPaneScaffold splits correctly on tablet
+  - Smooth animated transitions between panes
+  - Zero manual WindowSizeClass branching in codebase
 ```
 
 ---

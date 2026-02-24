@@ -68,10 +68,15 @@ scope:
     Create the root Gradle build files with Version Catalog for all dependencies.
 
     Version catalog must include:
-    - Kotlin 2.0.x
+    - Kotlin 2.1.10
+    - AGP 8.8.2
     - Compose BOM (2025.x latest stable)
-    - Material 3
+    - Material 3 (1.4.0)
+    - Material 3 Adaptive Navigation Suite (1.4.0) — NavigationSuiteScaffold
+    - Material 3 Adaptive Layout (1.2.0) — AnimatedPane, ListDetailPaneScaffoldRole
+    - Material 3 Adaptive Navigation (1.2.0) — NavigableListDetailPaneScaffold
     - Compose Navigation
+    - Activity Compose (edge-to-edge, enableEdgeToEdge)
     - Ktor Client (CIO engine)
     - OkHttp (WebSocket)
     - Paho MQTT Android (hannesa2 fork v3.6.4)
@@ -80,9 +85,14 @@ scope:
     - Room (local DB)
     - Kotlinx Serialization
     - Kotlinx Coroutines
-    - WindowSizeClass (Compose Material 3)
     - Coil (image loading for SVG snapshots)
     - Timber (logging)
+
+    NOTE: WindowSizeClass is superseded by the Material 3 Adaptive libraries.
+    NavigationSuiteScaffold automatically reads window size to choose
+    BottomNavigationBar vs NavigationRail vs NavigationDrawer.
+    NavigableListDetailPaneScaffold automatically manages single-pane
+    vs split-pane based on window size — zero manual breakpoint math.
 
     gradle.properties:
     - org.gradle.jvmargs=-Xmx4g (for M3 builds)
@@ -149,41 +159,54 @@ validation:
   - Shows "Hello GWA" text
 ```
 
-### Task 3: Navigation Shell
+### Task 3: Navigation Shell (Material 3 Adaptive)
 
 ```yaml
 task_id: "f01-003"
 complexity: low
 scope:
   files:
-    - android/app/src/main/kotlin/bar/bto/gwa/navigation/GWANavGraph.kt
-    - android/app/src/main/kotlin/bar/bto/gwa/navigation/GWANavHost.kt
-    - android/app/src/main/kotlin/bar/bto/gwa/navigation/Screen.kt
+    - android/app/src/main/kotlin/bar/bto/gwa/ui/navigation/MainScaffold.kt
+    - android/app/src/main/kotlin/bar/bto/gwa/ui/dashboard/DashboardScreen.kt
+    - android/app/src/main/kotlin/bar/bto/gwa/ui/users/UsersScreen.kt
+    - android/app/src/main/kotlin/bar/bto/gwa/ui/settings/SettingsScreen.kt
   description: |
-    Set up Compose Navigation with:
-    - Sealed class/interface for Screen routes:
-      - Screen.Dashboard
-      - Screen.Sessions
-      - Screen.SessionDetail(id)
-      - Screen.Terminal(sessionId)
-      - Screen.Infrastructure
-      - Screen.LLMEvents
-      - Screen.Settings
+    Use Compose Material 3 Adaptive library for ALL responsive layout logic.
+    Zero manual WindowSizeClass branching or breakpoint math.
 
-    - Adaptive navigation:
-      - Phone: BottomNavigation (Dashboard, Sessions, Infra, Settings)
-      - Tablet: NavigationRail (same items, left side)
+    MainScaffold.kt — Root navigation using NavigationSuiteScaffold:
+    - NavigationSuiteScaffold automatically renders:
+      - Phone (Compact): BottomNavigationBar
+      - Small tablet (Medium): NavigationRail
+      - Large tablet (Expanded): Persistent NavigationDrawer
+    - Admin destinations enum: Dashboard, Users, Settings
+    - Each destination item provides icon + label
+    - Content switches based on selected destination
 
-    - Use WindowSizeClass to switch between layouts
-    - NavHost with placeholder screens (just Text composables)
+    UsersScreen.kt — List-detail using NavigableListDetailPaneScaffold:
+    - rememberListDetailPaneScaffoldNavigator<User>() for navigation state
+    - NavigableListDetailPaneScaffold automatically renders:
+      - Phone: Single pane, stacked navigation with predictive back
+      - Tablet: Side-by-side list (1/3) + detail (2/3)
+    - AnimatedPane wraps both list and detail panes
+    - User data class with @Parcelize for saved state support
+    - Mock user list with UserListPane and UserDetailPane
+
+    DashboardScreen.kt / SettingsScreen.kt — Stub placeholder screens
+
+    NOTE: This replaces the previous approach of manual WindowSizeClass
+    checks with BottomNavigation/NavigationRail switching. The Material 3
+    Adaptive library handles all of this automatically.
 
 dependencies:
   blocked_by: ["f01-002"]
   blocks: []
 
 validation:
-  - Navigation between placeholder screens works on both phone and tablet layouts
-  - WindowSizeClass correctly detects Pixel 10 Pro XL as Compact or Medium
+  - NavigationSuiteScaffold shows BottomNav on Pixel 10 Pro XL, Rail on tablet
+  - NavigableListDetailPaneScaffold shows split-pane on tablet, stacked on phone
+  - Predictive back gesture works on phone for list-detail navigation
+  - No manual breakpoint math anywhere in the code
 ```
 
 ### Task 4: Git & CI Setup
