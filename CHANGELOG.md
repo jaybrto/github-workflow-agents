@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.12.1] - 2026-02-24
+
+### Fixed
+- `start-planning`: Replace fixed 3-second sleep with polling loop that waits for REPL `❯` prompt before sending the planning prompt (30s timeout, 1s poll interval)
+
 ## [4.12.0] - 2026-02-21
 
 ### Changed

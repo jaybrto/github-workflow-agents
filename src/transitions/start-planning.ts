@@ -354,14 +354,40 @@ The plan will be posted as a GitHub issue comment and the issue will be moved to
   while (true) {
     await tmux.sendCommand(windowNum, "claude --dangerously-skip-permissions --model claude-opus-4-6");
 
-    // Wait for REPL to initialize
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    // Poll for REPL readiness — wait until the ❯ prompt appears
+    const REPL_READY_TIMEOUT_MS = 30_000;
+    const REPL_POLL_INTERVAL_MS = 1_000;
+    let replReady = false;
+    let paneOutput = "";
+    let elapsed = 0;
 
-    const paneOutput = await tmux.capturePane(windowNum, 30);
-    if (!detectAuthFailure(paneOutput)) {
+    while (elapsed < REPL_READY_TIMEOUT_MS) {
+      await new Promise((resolve) => setTimeout(resolve, REPL_POLL_INTERVAL_MS));
+      elapsed += REPL_POLL_INTERVAL_MS;
+      paneOutput = await tmux.capturePane(windowNum, 30);
+
+      // Auth failure is visible quickly — check before waiting for full readiness
+      if (detectAuthFailure(paneOutput)) break;
+
+      if (paneOutput.includes("❯")) {
+        replReady = true;
+        break;
+      }
+    }
+
+    if (replReady) {
       // Check for interactive dialogs blocking Claude startup
       await handleDialogIfPresent(windowNum);
+      log("info", `REPL ready after ${elapsed}ms`);
       break;
+    }
+
+    // Either auth failure or timeout
+    if (!detectAuthFailure(paneOutput)) {
+      throw new Error(
+        `Claude REPL did not become ready within ${REPL_READY_TIMEOUT_MS}ms. ` +
+        `Captured: ${paneOutput.slice(0, 300)}`
+      );
     }
 
     authRetries++;
