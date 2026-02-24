@@ -71,9 +71,9 @@ curl -s "http://localhost:12345/metrics" | grep otelcol_receiver_accepted
 @opentelemetry/semantic-conventions, @grpc/grpc-js
 ```
 
-## Future Work (v4.0)
+## Completed (v4.0+)
 
-- Remove `@opentelemetry/instrumentation-ioredis` (Redis removal)
-- Add RabbitMQ instrumentation
-- Add terminal streaming metrics
-- Add mobile app connectivity metrics
+- `@opentelemetry/instrumentation-ioredis` removed (Redis fully removed)
+- AMQP publish/consume operations have OTEL spans (`amqp.*`)
+- Terminal streaming metrics added (`gwa_sessions_active`, recording duration)
+- Session metrics dashboard deployed to Grafana

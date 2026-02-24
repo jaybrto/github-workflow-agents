@@ -16,6 +16,11 @@ You own all TypeScript source code in `src/` and `src/lib/`:
 - `src/worker.ts` - Worker process
 - `src/setup-project.ts` - Initialize projects
 - `src/health-check.ts` - Health check
+- `src/planning-complete.ts` - Post plan comment, cleanup worktree
+- `src/provision.ts` - Pod startup provisioning from orchestrator
+- `src/push-credentials.ts` - Push local credentials to orchestrator
+- `src/credentials-backup.ts` - Backup credentials to MinIO
+- `src/credential-history.ts` - Query credential refresh history
 
 ### Library Modules
 - `src/lib/db.ts` - SQLite database operations (bun:sqlite)
@@ -43,6 +48,7 @@ You own all TypeScript source code in `src/` and `src/lib/`:
 - `src/transitions/resume-with-failures.ts`
 - `src/transitions/send-answer.ts`
 - `src/transitions/deploy-and-cleanup.ts`
+- `src/transitions/provision-environment.ts`
 
 ## Tech Stack
 
@@ -87,9 +93,10 @@ bun test           # Run tests
 @opentelemetry/* (traces, logs, metrics), node-tmux
 ```
 
-## Future Work (v4.0)
-
-- Add XState v5 state machine integration (`src/lib/state-machine.ts`)
-- Add RabbitMQ messaging via amqplib (`src/lib/amqp.ts`)
-- Remove Redis completely (src/lib/redis.ts, ioredis dependency)
-- Add shared types module (`src/shared/types.ts`)
+### Additional Library Modules (v4.0+)
+- `src/lib/state-machine.ts` - XState v5 session lifecycle machine
+- `src/lib/amqp.ts` - RabbitMQ AMQP client
+- `src/lib/credentials-manager.ts` - OAuth credential backup/restore/refresh
+- `src/lib/dialog-handler.ts` - Haiku-powered TUI dialog auto-dismissal
+- `src/lib/terminal-relay.ts` - WebSocket relay, snapshots, recordings
+- `src/shared/types.ts` - Canonical shared types (SessionState, AmqpMessage, etc.)

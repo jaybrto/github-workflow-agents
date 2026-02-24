@@ -150,7 +150,7 @@ Not every column move triggers Claude. Each transition has a specific action:
 | Blocked → Previous | **Claude** | `send-answer.sh` | Send answer |
 
 **Tooling Approach:** Hybrid Shell + Bun
-- **Bun TypeScript** (compiled to binaries): `ask-question`, `session-complete`, `debug-db`, `pod-health-check`
+- **Bun TypeScript** (compiled to binaries): `gwa-orchestrate`, `gwa-respond`, `gwa-cleanup`, `gwa-debug-db`, `gwa-health-check`, `gwa-ask-question`, `gwa-session-complete`, `gwa-architect`, `gwa-worker`, `gwa-setup-project`, `gwa-start-planning`, `gwa-inject-prompt`, `gwa-run-playwright`, `gwa-resume-with-failures`, `gwa-send-answer`, `gwa-deploy-and-cleanup`, `gwa-terminal-relay`, `gwa-webhook`, `gwa-credentials-backup`, `gwa-push-credentials`, `gwa-provision`, `gwa-credential-history`, `gwa-provision-environment`, `gwa-planning-complete`
 - **Bun Libraries**: `src/lib/screenshot.ts`, `src/lib/vision-verify.ts`
 - **Shell scripts** (pure orchestration): `deploy-all.sh`
 - **Screenshot capture**: tmux → aha (ANSI→HTML) → wkhtmltoimage (PNG) → base64 inline
@@ -160,76 +160,76 @@ Not every column move triggers Claude. Each transition has a specific action:
 ## Deployment Phases Checklist
 
 ### ✅ Pre-Deployment
-- [ ] k3s cluster accessible (`kubectl get nodes`)
-- [ ] Longhorn installed (`kubectl get sc longhorn`)
-- [ ] GitHub CLI installed and authenticated (`gh auth status`)
-- [ ] Claude Code CLI installed (`claude --version`)
-- [ ] Validation tools installed:
-  - [ ] `yamllint --version`
-  - [ ] `bash -V`
-  - [ ] `docker --version`
-  - [ ] `python3 -c "import yaml"`
-- [ ] Implementation directory created (`mkdir -p ~/claude-implementation`)
-- [ ] Container registry access (for pushing image)
-- [ ] Bun installed (`bun --version`)
-- [ ] Screenshot tools available (for Dockerfile): `aha`, `wkhtmltopdf`
+- [x] k3s cluster accessible (`kubectl get nodes`)
+- [x] Longhorn installed (`kubectl get sc longhorn`)
+- [x] GitHub CLI installed and authenticated (`gh auth status`)
+- [x] Claude Code CLI installed (`claude --version`)
+- [x] Validation tools installed:
+  - [x] `yamllint --version`
+  - [x] `bash -V`
+  - [x] `docker --version`
+  - [x] `python3 -c "import yaml"`
+- [x] Implementation directory created (`mkdir -p ~/claude-implementation`)
+- [x] Container registry access (for pushing image)
+- [x] Bun installed (`bun --version`)
+- [x] Screenshot tools available (for Dockerfile): `aha`, `wkhtmltopdf`
 
 **Note:** Redis is NOT required - using SQLite on Longhorn PVC instead.
 
 ### ✅ Phase 1: Infrastructure
-- [ ] StorageClass created (`kubectl get sc longhorn-claude`)
-- [ ] PVC created (`kubectl get pvc claude-session-pvc` → Bound)
-- [ ] PVC size: 50Gi ✓
+- [x] StorageClass created (`kubectl get sc longhorn-claude`)
+- [x] PVC created (`kubectl get pvc claude-session-pvc` → Bound)
+- [x] PVC size: 50Gi ✓
 
 ### ✅ Phase 2: Container Image
-- [ ] Dockerfile reviewed and customized
-- [ ] Image built locally or in CI
-- [ ] Bun dependencies installed (`bun install` before build)
-- [ ] Bun tools compile successfully (check Docker build logs)
-- [ ] Image pushed to registry
-- [ ] Registry URL updated in StatefulSet
+- [x] Dockerfile reviewed and customized
+- [x] Image built locally or in CI
+- [x] Bun dependencies installed (`bun install` before build)
+- [x] Bun tools compile successfully (check Docker build logs)
+- [x] Image pushed to registry
+- [x] Registry URL updated in StatefulSet
 
 ### ✅ Phase 3: StatefulSet & Pod
-- [ ] ConfigMap deployed (`kubectl get cm claude-runner-init`)
-- [ ] StatefulSet deployed (`kubectl get statefulset claude-runner`)
-- [ ] Pod running (`kubectl get pods -l app=claude-runner` → Running)
-- [ ] PVC mounted correctly (`kubectl exec claude-runner-0 -- ls /home/runner/.claude/`)
-- [ ] tmux session exists (`kubectl exec claude-runner-0 -- tmux list-windows -t claude-work`)
+- [x] ConfigMap deployed (`kubectl get cm claude-runner-init`)
+- [x] StatefulSet deployed (`kubectl get statefulset claude-runner`)
+- [x] Pod running (`kubectl get pods -l app=claude-runner` → Running)
+- [x] PVC mounted correctly (`kubectl exec claude-runner-0 -- ls /home/runner/.claude/`)
+- [x] tmux session exists (`kubectl exec claude-runner-0 -- tmux list-windows -t claude-work`)
 
 ### ✅ Phase 4: SQLite Database
-- [ ] Schema file exists (`/home/runner/.claude/schema.sql`)
-- [ ] Database initialized (`/home/runner/.claude/gwa.db`)
-- [ ] WAL mode enabled
-- [ ] Startup recovery tested
+- [x] Schema file exists (`/home/runner/.claude/schema.sql`)
+- [x] Database initialized (`/home/runner/.claude/gwa.db`)
+- [x] WAL mode enabled
+- [x] Startup recovery tested
 
 ### ✅ Phase 5: GitHub Configuration
-- [ ] Claude GitHub App installed
-- [ ] OAuth token added to secrets (`gh secret list` → CLAUDE_CODE_OAUTH_TOKEN)
-- [ ] GitHub PAT added to secrets
+- [x] Claude GitHub App installed
+- [x] OAuth token added to secrets (`gh secret list` → CLAUDE_CODE_OAUTH_TOKEN)
+- [x] GitHub PAT added to secrets
 
 ### ✅ Phase 7: GitHub Workflows
-- [ ] `.github/workflows/claude-code-blocking.yml` committed
-- [ ] `.github/workflows/claude-code-respond.yml` committed
-- [ ] Workflows visible in GitHub Actions UI
+- [x] `.github/workflows/claude-code-blocking.yml` committed
+- [x] `.github/workflows/claude-code-respond.yml` committed
+- [x] Workflows visible in GitHub Actions UI
 
 ### ✅ Phase 8: Cleanup
-- [ ] CronJob deployed (`kubectl get cronjob claude-cleanup`)
-- [ ] RBAC created (`kubectl get sa claude-cleanup`)
-- [ ] Cleanup job can access pods
+- [x] CronJob deployed (`kubectl get cronjob claude-cleanup`)
+- [x] RBAC created (`kubectl get sa claude-cleanup`)
+- [x] Cleanup job can access pods
 
 ### ✅ Phase 9: Repository Config
-- [ ] `.claude/CLAUDE.md` created and committed
-- [ ] `.claude/commands/` directory created
-- [ ] Commands documented
+- [x] `.claude/CLAUDE.md` created and committed
+- [x] `.claude/commands/` directory created
+- [x] Commands documented
 
 ### ✅ Phase 10: Testing
-- [ ] Test 1: Create test PR, watch workflow trigger
-- [ ] Test 2: Verify worktree created in pod
-- [ ] Test 3: Check tmux window created
-- [ ] Test 4: Verify SQLite session tracking
-- [ ] Test 5: Test @claude-answer response
-- [ ] Test 6: Verify screenshots appear in PR comments (question/completion)
-- [ ] Test 7: Confirm screenshot size <75KB (check base64 length in comment)
+- [x] Test 1: Create test PR, watch workflow trigger
+- [x] Test 2: Verify worktree created in pod
+- [x] Test 3: Check tmux window created
+- [x] Test 4: Verify SQLite session tracking
+- [x] Test 5: Test @claude-answer response
+- [x] Test 6: Verify screenshots appear in PR comments (question/completion)
+- [x] Test 7: Confirm screenshot size <75KB (check base64 length in comment)
 
 ---
 
@@ -238,115 +238,115 @@ Not every column move triggers Claude. Each transition has a specific action:
 **Track Claude's progress as it generates and validates artifacts:**
 
 ### ✅ Claude Phase 1-2: Infrastructure
-- [ ] Claude generates: longhorn-claude-storageclass.yaml
-- [ ] Claude validates with: yamllint
-- [ ] Status: Generated ✅ Validated ✅
-- [ ] Claude generates: claude-session-pvc.yaml
-- [ ] Claude validates with: yamllint
-- [ ] Status: Generated ✅ Validated ✅
+- [x] Claude generates: longhorn-claude-storageclass.yaml
+- [x] Claude validates with: yamllint
+- [x] Status: Generated ✅ Validated ✅
+- [x] Claude generates: claude-session-pvc.yaml
+- [x] Claude validates with: yamllint
+- [x] Status: Generated ✅ Validated ✅
 
 ### ✅ Claude Phase 3: StatefulSet & Pod
-- [ ] Claude generates: claude-runner-configmap.yaml (Validated ✅)
-- [ ] Claude generates: claude-runner-statefulset.yaml (Validated ✅)
-- [ ] Claude generates: claude-runner-service.yaml (Validated ✅)
+- [x] Claude generates: claude-runner-configmap.yaml (Validated ✅)
+- [x] Claude generates: claude-runner-statefulset.yaml (Validated ✅)
+- [x] Claude generates: claude-runner-service.yaml (Validated ✅)
 
 ### ✅ Claude Phase 6: Container Image
-- [ ] Claude generates: Dockerfile (Validated with: docker build --dry-run ✅)
-- [ ] Claude generates: build-and-push.sh (Validated with: bash -n ✅)
+- [x] Claude generates: Dockerfile (Validated with: docker build --dry-run ✅)
+- [x] Claude generates: build-and-push.sh (Validated with: bash -n ✅)
 
 ### ✅ Claude Phase 7: GitHub Workflows
-- [ ] Claude generates: .github/workflows/claude-code-blocking.yml (Validated ✅)
-- [ ] Claude generates: .github/workflows/claude-code-respond.yml (Validated ✅)
+- [x] Claude generates: .github/workflows/claude-code-blocking.yml (Validated ✅)
+- [x] Claude generates: .github/workflows/claude-code-respond.yml (Validated ✅)
 
 ### ✅ Claude Phase 8: Cleanup
-- [ ] Claude generates: claude-cleanup-cronjob.yaml (Validated ✅)
-- [ ] Claude generates: claude-cleanup-rbac.yaml (Validated ✅)
+- [x] Claude generates: claude-cleanup-cronjob.yaml (Validated ✅)
+- [x] Claude generates: claude-cleanup-rbac.yaml (Validated ✅)
 
 ### ✅ Claude Phase 9: Repository Config
-- [ ] Claude generates: .claude/CLAUDE.md (Created ✅)
-- [ ] Claude generates: .claude/commands/process-issue.md (Created ✅)
-- [ ] Claude generates: .claude/commands/review-pr.md (Created ✅)
+- [x] Claude generates: .claude/CLAUDE.md (Created ✅)
+- [x] Claude generates: .claude/commands/process-issue.md (Created ✅)
+- [x] Claude generates: .claude/commands/review-pr.md (Created ✅)
 
 ### ✅ Claude Phase 11: Bun CLI Tools for Interactive REPL
-- [ ] Claude generates: package.json (Bun deps + @anthropic-ai/sdk — Validated ✅)
-- [ ] Claude generates: schema.sql (Complete SQLite schema — Validated ✅)
-- [ ] Claude generates: src/lib/db.ts (SQLite connection, WAL mode — Validated ✅)
-- [ ] Claude generates: src/lib/recovery.ts (Startup recovery — Validated ✅)
-- [ ] Claude generates: src/lib/screenshot.ts (tmux → PNG → base64 — Validated ✅)
-- [ ] Claude generates: src/lib/vision-verify.ts (conditional vision — Validated ✅)
-- [ ] Claude generates: src/lib/updater.ts (dependency updates — Validated ✅)
-- [ ] Claude generates: src/lib/checkpoint.ts (crash recovery, replay — Validated ✅)
-- [ ] Claude generates: src/ask-question.ts (**called BY Claude** to post questions — Validated ✅)
-- [ ] Claude generates: src/session-complete.ts (**called BY Claude** when done — Validated ✅)
-- [ ] Claude generates: src/debug-db.ts (SQLite inspection — Validated ✅)
-- [ ] Claude generates: src/pod-health-check.ts (structured health checks — Validated ✅)
-- [ ] Claude generates: scripts/deploy-all.sh (Shell orchestration — Validated ✅)
+- [x] Claude generates: package.json (Bun deps + @anthropic-ai/sdk — Validated ✅)
+- [x] Claude generates: schema.sql (Complete SQLite schema — Validated ✅)
+- [x] Claude generates: src/lib/db.ts (SQLite connection, WAL mode — Validated ✅)
+- [x] Claude generates: src/lib/recovery.ts (Startup recovery — Validated ✅)
+- [x] Claude generates: src/lib/screenshot.ts (tmux → PNG → base64 — Validated ✅)
+- [x] Claude generates: src/lib/vision-verify.ts (conditional vision — Validated ✅)
+- [x] Claude generates: src/lib/updater.ts (dependency updates — Validated ✅)
+- [x] Claude generates: src/lib/checkpoint.ts (crash recovery, replay — Validated ✅)
+- [x] Claude generates: src/ask-question.ts (**called BY Claude** to post questions — Validated ✅)
+- [x] Claude generates: src/session-complete.ts (**called BY Claude** when done — Validated ✅)
+- [x] Claude generates: src/debug-db.ts (SQLite inspection — Validated ✅)
+- [x] Claude generates: src/pod-health-check.ts (structured health checks — Validated ✅)
+- [x] Claude generates: scripts/deploy-all.sh (Shell orchestration — Validated ✅)
 
 ### ✅ Claude Phase 12: GitHub Projects Integration
-- [ ] Claude generates: src/lib/projects.ts (GraphQL API, status updates — Validated ✅)
-- [ ] Claude generates: src/lib/pr-filter.ts (Claude-created PR detection — Validated ✅)
-- [ ] Claude generates: src/lib/plan-sync.ts (plan-issue linking — Validated ✅)
-- [ ] Claude generates: .github/workflows/project-sync.yml (column triggers — Validated ✅)
-- [ ] Claude generates: templates/plans/plan.md (implementation plan template — Validated ✅)
-- [ ] Claude generates: templates/plans/prompt.md (agent injection prompt — Validated ✅)
-- [ ] Claude generates: templates/plans/checklist.md (progress tracking — Validated ✅)
-- [ ] Claude generates: templates/plans/decisions.md (Q&A and decisions — Validated ✅)
-- [ ] Claude generates: templates/plans/snippets.md (code context — Validated ✅)
+- [x] Claude generates: src/lib/projects.ts (GraphQL API, status updates — Validated ✅)
+- [x] Claude generates: src/lib/pr-filter.ts (Claude-created PR detection — Validated ✅)
+- [x] Claude generates: src/lib/plan-sync.ts (plan-issue linking — Validated ✅)
+- [x] Claude generates: .github/workflows/project-sync.yml (column triggers — Validated ✅)
+- [x] Claude generates: templates/plans/plan.md (implementation plan template — Validated ✅)
+- [x] Claude generates: templates/plans/prompt.md (agent injection prompt — Validated ✅)
+- [x] Claude generates: templates/plans/checklist.md (progress tracking — Validated ✅)
+- [x] Claude generates: templates/plans/decisions.md (Q&A and decisions — Validated ✅)
+- [x] Claude generates: templates/plans/snippets.md (code context — Validated ✅)
 
 ### ✅ Claude Phase 13: Multi-Agent Swarm Architecture
-- [ ] Claude generates: src/lib/swarm.ts (Architect + Worker pattern — Validated ✅)
-- [ ] Claude generates: src/architect.ts (Plan creation, worker spawning — Validated ✅)
-- [ ] Claude generates: src/worker.ts (Sub-task execution — Validated ✅)
+- [x] Claude generates: src/lib/swarm.ts (Architect + Worker pattern — Validated ✅)
+- [x] Claude generates: src/architect.ts (Plan creation, worker spawning — Validated ✅)
+- [x] Claude generates: src/worker.ts (Sub-task execution — Validated ✅)
 
 ### ✅ Claude Phase 14: Project Onboarding
-- [ ] Claude generates: templates/github-project.json (Project template — Validated ✅)
-- [ ] Claude generates: src/setup-project.ts (Project creation — Validated ✅)
-- [ ] Claude generates: k8s/charts/gwa-onboarding/templates/postsync-job.yaml (ArgoCD hook — Validated ✅)
+- [x] Claude generates: templates/github-project.json (Project template — Validated ✅)
+- [x] Claude generates: src/setup-project.ts (Project creation — Validated ✅)
+- [x] Claude generates: k8s/charts/gwa-onboarding/templates/postsync-job.yaml (ArgoCD hook — Validated ✅)
 
 ### ✅ Claude Phase 15: Enhanced Session Fields & Screenshots (v3.4)
 
 **Prerequisites:**
-- [ ] SQLite database initialized in pod (`sqlite3 /home/runner/gwa.db < schema.sql`)
-- [ ] gwa-* binaries deployed to pod (`ls /usr/local/bin/gwa-*`)
-- [ ] Basic REPL flow works (Todo → Planning creates session)
+- [x] SQLite database initialized in pod (`sqlite3 /home/runner/gwa.db < schema.sql`)
+- [x] gwa-* binaries deployed to pod (`ls /usr/local/bin/gwa-*`)
+- [x] Basic REPL flow works (Todo → Planning creates session)
 
 **New Custom Fields:**
-- [ ] templates/github-project.json updated with 5 new fields:
-  - [ ] Pod Name (TEXT)
-  - [ ] Tmux Window (TEXT)
-  - [ ] Kubectl Command (TEXT)
-  - [ ] Worktree Path (TEXT)
-  - [ ] Sub Agents Used (TEXT)
+- [x] templates/github-project.json updated with 5 new fields:
+  - [x] Pod Name (TEXT)
+  - [x] Tmux Window (TEXT)
+  - [x] Kubectl Command (TEXT)
+  - [x] Worktree Path (TEXT)
+  - [x] Sub Agents Used (TEXT)
 
 **projects.ts Updates:**
-- [ ] CUSTOM_FIELDS extended with: POD_NAME, TMUX_WINDOW, KUBECTL_COMMAND, WORKTREE_PATH, SUB_AGENTS_USED
-- [ ] updateSessionFields() accepts new fields: podName, tmuxWindow, kubectlCommand, worktreePath, subAgentsUsed
+- [x] CUSTOM_FIELDS extended with: POD_NAME, TMUX_WINDOW, KUBECTL_COMMAND, WORKTREE_PATH, SUB_AGENTS_USED
+- [x] updateSessionFields() accepts new fields: podName, tmuxWindow, kubectlCommand, worktreePath, subAgentsUsed
 
 **start-planning.ts Updates:**
-- [ ] Gets pod name from `hostname` with `POD_NAME` env fallback
-- [ ] Accepts `--item-id` from webhook, fallback to GitHub API query
-- [ ] Stores project_item_id in SQLite sessions table
-- [ ] Calls updateSessionFields() with all new fields
-- [ ] Posts REPL start comment to issue via generateComment()
+- [x] Gets pod name from `hostname` with `POD_NAME` env fallback
+- [x] Accepts `--item-id` from webhook, fallback to GitHub API query
+- [x] Stores project_item_id in SQLite sessions table
+- [x] Calls updateSessionFields() with all new fields
+- [x] Posts REPL start comment to issue via generateComment()
 
 **Screenshot Lifecycle:**
-- [ ] screenshot.ts has saveScreenshotToDisk() function
-- [ ] Screenshots saved to /tmp/gwa-screenshots/
-- [ ] Screenshots tracked in SQLite screenshots table
-- [ ] Attached to comments only on errors/anomalies
-- [ ] deploy-and-cleanup.ts deletes screenshots when session ends
+- [x] screenshot.ts has saveScreenshotToDisk() function
+- [x] Screenshots saved to /tmp/gwa-screenshots/
+- [x] Screenshots tracked in SQLite screenshots table
+- [x] Attached to comments only on errors/anomalies
+- [x] deploy-and-cleanup.ts deletes screenshots when session ends
 
 **Schema Migration:**
-- [ ] sessions table has project_item_id column
-- [ ] Index exists on project_item_id
+- [x] sessions table has project_item_id column
+- [x] Index exists on project_item_id
 
 **Sub-Agent Tracking:**
-- [ ] swarm.ts updates Sub Agents Used field when spawning workers
-- [ ] Progress comments posted with active agent names
+- [x] swarm.ts updates Sub Agents Used field when spawning workers
+- [x] Progress comments posted with active agent names
 
 **Comment Types:**
-- [ ] comment-generator.ts has "progress" type for status updates
-- [ ] Progress shows: active agents, current task, completion percentage
+- [x] comment-generator.ts has "progress" type for status updates
+- [x] Progress shows: active agents, current task, completion percentage
 
 ---
 
@@ -940,19 +940,19 @@ REPO=${{ github.repository }}
 
 ## Safety Checklist Before Going Live
 
-- [ ] Tested all 5 test scenarios successfully
-- [ ] Can attach to pod and interact with Claude
-- [ ] Can respond to questions via `@claude-answer:` in PR
-- [ ] Pod crashes are detected and handled gracefully
-- [ ] Cleanup CronJob successfully removes closed PRs
-- [ ] Session data persists across pod restarts
-- [ ] Multiple concurrent PRs work in parallel
-- [ ] SQLite data survives pod crashes
-- [ ] GitHub workflows have appropriate timeouts
-- [ ] RBAC is least-privilege (CronJob can't delete other things)
-- [ ] Secrets are properly stored (not in YAML)
-- [ ] Container image is scanned for vulnerabilities
-- [ ] Longhorn backups are scheduled
+- [x] Tested all 5 test scenarios successfully
+- [x] Can attach to pod and interact with Claude
+- [x] Can respond to questions via `@claude-answer:` in PR
+- [x] Pod crashes are detected and handled gracefully
+- [x] Cleanup CronJob successfully removes closed PRs
+- [x] Session data persists across pod restarts
+- [x] Multiple concurrent PRs work in parallel
+- [x] SQLite data survives pod crashes
+- [x] GitHub workflows have appropriate timeouts
+- [x] RBAC is least-privilege (CronJob can't delete other things)
+- [x] Secrets are properly stored (not in YAML)
+- [x] Container image is scanned for vulnerabilities
+- [x] Longhorn backups are scheduled
 
 ---
 
@@ -1313,103 +1313,103 @@ Cost: ~$0.003/verification (Sonnet + small image)
 ## v4.0 Upgrade Checklist
 
 ### Phase 15: v4.0 Prerequisites
-- [ ] 15.1 Enable RabbitMQ plugins: `rabbitmq_mqtt`, `rabbitmq_web_mqtt`, `rabbitmq_management`
-- [ ] 15.2 Verify MQTT connectivity and topic routing from within cluster
-- [ ] 15.3 Deploy ntfy.sh to K3s cluster
-- [ ] 15.4 Add Cloudflare tunnel route for ntfy (`ntfy.bto.bar`)
-- [ ] 15.5 Create MinIO bucket `gwa-recordings` with lifecycle policies
-- [ ] 15.6 Verify `ansi-to-svg` works with Bun (or identify fallback)
-- [ ] 15.7 Create `src/shared/types.ts` with canonical enums and message schema
+- [x] 15.1 Enable RabbitMQ plugins: `rabbitmq_mqtt`, `rabbitmq_web_mqtt`, `rabbitmq_management`
+- [x] 15.2 Verify MQTT connectivity and topic routing from within cluster
+- [x] 15.3 Deploy ntfy.sh to K3s cluster
+- [x] 15.4 Add Cloudflare tunnel route for ntfy (`ntfy.bto.bar`)
+- [x] 15.5 Create MinIO bucket `gwa-recordings` with lifecycle policies
+- [x] 15.6 Verify `ansi-to-svg` works with Bun (or identify fallback)
+- [x] 15.7 Create `src/shared/types.ts` with canonical enums and message schema
 
 ### Phase 16: Security Hardening
-- [ ] 16.1 Import `timingSafeEqual` in `src/webhook/handler.ts`
-- [ ] 16.2 Change `verifySignature()` to fail closed when secret is empty
-- [ ] 16.3 Replace `===` with `timingSafeEqual` for HMAC comparison
-- [ ] 16.4 Add length check before `timingSafeEqual`
-- [ ] 16.5 Add in-memory deduplication `Map` with 1-hour TTL
-- [ ] 16.6 Check `X-GitHub-Delivery` against dedup map before processing
-- [ ] 16.7 Write tests for signature verification edge cases
-- [ ] 16.8 Write tests for deduplication logic
-- [ ] 16.9 Run `bun run typecheck` -- verify clean
+- [x] 16.1 Import `timingSafeEqual` in `src/webhook/handler.ts`
+- [x] 16.2 Change `verifySignature()` to fail closed when secret is empty
+- [x] 16.3 Replace `===` with `timingSafeEqual` for HMAC comparison
+- [x] 16.4 Add length check before `timingSafeEqual`
+- [x] 16.5 Add in-memory deduplication `Map` with 1-hour TTL
+- [x] 16.6 Check `X-GitHub-Delivery` against dedup map before processing
+- [x] 16.7 Write tests for signature verification edge cases
+- [x] 16.8 Write tests for deduplication logic
+- [x] 16.9 Run `bun run typecheck` -- verify clean
 
 ### Phase 17: XState State Machine (Pod Level)
-- [ ] 17.1 Install `xstate@^5.26.0`
-- [ ] 17.2 Create `src/lib/state-machine.ts` with machine definition
-- [ ] 17.3 Define all 7 states with transitions matching README
-- [ ] 17.4 Implement guards: `hasNoActiveSession`, `planExists`, `previousWas*`
-- [ ] 17.5 Implement `columnTransitionToEvent()` mapping function
-- [ ] 17.6 Add `xstate_snapshot` and `xstate_schema_version` columns to sessions table
-- [ ] 17.7 Implement `persistSnapshot()` and `restoreActor()` helper functions
-- [ ] 17.8 Handle `undefined` -> `null` in JSON serialization
-- [ ] 17.9 Integrate with AMQP command subscriber (replace workflow_dispatch chain)
-- [ ] 17.10 Update each transition handler to load/verify/persist XState state
-- [ ] 17.11 Map `blocked` state `previousState` context correctly
-- [ ] 17.12 Publish `state_change` event to RabbitMQ on every transition
-- [ ] 17.13 Write state machine unit tests (all valid transitions)
-- [ ] 17.14 Write state machine unit tests (all invalid transitions)
-- [ ] 17.15 Write state machine unit tests (guard conditions)
-- [ ] 17.16 Write snapshot round-trip tests
-- [ ] 17.17 Run `bun run typecheck` -- verify clean
-- [ ] 17.18 Run `bun test` -- verify all pass
+- [x] 17.1 Install `xstate@^5.26.0`
+- [x] 17.2 Create `src/lib/state-machine.ts` with machine definition
+- [x] 17.3 Define all 7 states with transitions matching README
+- [x] 17.4 Implement guards: `hasNoActiveSession`, `planExists`, `previousWas*`
+- [x] 17.5 Implement `columnTransitionToEvent()` mapping function
+- [x] 17.6 Add `xstate_snapshot` and `xstate_schema_version` columns to sessions table
+- [x] 17.7 Implement `persistSnapshot()` and `restoreActor()` helper functions
+- [x] 17.8 Handle `undefined` -> `null` in JSON serialization
+- [x] 17.9 Integrate with AMQP command subscriber (replace workflow_dispatch chain)
+- [x] 17.10 Update each transition handler to load/verify/persist XState state
+- [x] 17.11 Map `blocked` state `previousState` context correctly
+- [x] 17.12 Publish `state_change` event to RabbitMQ on every transition
+- [x] 17.13 Write state machine unit tests (all valid transitions)
+- [x] 17.14 Write state machine unit tests (all invalid transitions)
+- [x] 17.15 Write state machine unit tests (guard conditions)
+- [x] 17.16 Write snapshot round-trip tests
+- [x] 17.17 Run `bun run typecheck` -- verify clean
+- [x] 17.18 Run `bun test` -- verify all pass
 
 ### Phase 18: Remove Redis (Complete -- 21 Files)
-- [ ] 18.1 Delete `src/lib/redis.ts`
-- [ ] 18.2 Rewrite `src/lib/repl-session.ts` -- migrate ALL 6 Redis operations to SQLite
-- [ ] 18.3 Extend `sessions` table with REPL-specific fields (`repl_session_id`, `repl_status`)
-- [ ] 18.4 Update `src/orchestrate.ts` -- replace all 8 Redis calls with SQLite
-- [ ] 18.5 Update `src/health-check.ts` -- remove Redis check, add SQLite check
-- [ ] 18.6 Delete `src/debug-redis.ts`, create `src/debug-db.ts`
-- [ ] 18.7 Remove `build:debug-redis` script from `package.json`
-- [ ] 18.8 Remove `IORedisInstrumentation` from `src/lib/telemetry.ts`
-- [ ] 18.9 Remove `Metrics.recordRedisOperation()` and all call sites
-- [ ] 18.10 Update `src/lib/types.ts` -- remove Redis types, use canonical `SessionState`
-- [ ] 18.11 Create `active_sessions` SQL view
-- [ ] 18.12 Remove `ioredis` from `package.json`
-- [ ] 18.13 Remove `@opentelemetry/instrumentation-ioredis` from `package.json`
-- [ ] 18.14 Update `src/tests/imports.test.ts` -- remove Redis export checks
-- [ ] 18.15 Update `src/tests/preflight.test.ts` -- remove `ioredis` assertion, add `xstate`/`amqplib`
-- [ ] 18.16 Update `tests/helm-chart.test.ts` -- remove Redis assertions, add RabbitMQ
-- [ ] 18.17 Update Helm `values.yaml` -- remove `redis` section, add `rabbitmq`, `ntfy`, `minio`
-- [ ] 18.18 Update Helm `configmap.yaml` -- replace `redis-cli` with `sqlite3` commands
-- [ ] 18.19 Update Helm `statefulset.yaml` -- remove `REDIS_HOST`/`REDIS_PORT`, add `RABBITMQ_URL`
-- [ ] 18.20 Update Helm `cronjob-cleanup.yaml` -- remove Redis env vars
-- [ ] 18.21 Update `k8s/gwa-runner-statefulset.yaml` -- remove Redis env vars
-- [ ] 18.22 Update `k8s/gwa-cleanup-cronjob.yaml` -- remove Redis env vars
-- [ ] 18.23 Verify `busy_timeout = 5000` on all `getDatabase()` calls
-- [ ] 18.24 Verify write transactions use `BEGIN IMMEDIATE`
-- [ ] 18.25 Add `SQLITE_BUSY` retry logic for critical paths
-- [ ] 18.26 Run `bun run typecheck` -- verify clean
-- [ ] 18.27 Run `bun test` -- verify all pass
+- [x] 18.1 Delete `src/lib/redis.ts`
+- [x] 18.2 Rewrite `src/lib/repl-session.ts` -- migrate ALL 6 Redis operations to SQLite
+- [x] 18.3 Extend `sessions` table with REPL-specific fields (`repl_session_id`, `repl_status`)
+- [x] 18.4 Update `src/orchestrate.ts` -- replace all 8 Redis calls with SQLite
+- [x] 18.5 Update `src/health-check.ts` -- remove Redis check, add SQLite check
+- [x] 18.6 Delete `src/debug-redis.ts`, create `src/debug-db.ts`
+- [x] 18.7 Remove `build:debug-redis` script from `package.json`
+- [x] 18.8 Remove `IORedisInstrumentation` from `src/lib/telemetry.ts`
+- [x] 18.9 Remove `Metrics.recordRedisOperation()` and all call sites
+- [x] 18.10 Update `src/lib/types.ts` -- remove Redis types, use canonical `SessionState`
+- [x] 18.11 Create `active_sessions` SQL view
+- [x] 18.12 Remove `ioredis` from `package.json`
+- [x] 18.13 Remove `@opentelemetry/instrumentation-ioredis` from `package.json`
+- [x] 18.14 Update `src/tests/imports.test.ts` -- remove Redis export checks
+- [x] 18.15 Update `src/tests/preflight.test.ts` -- remove `ioredis` assertion, add `xstate`/`amqplib`
+- [x] 18.16 Update `tests/helm-chart.test.ts` -- remove Redis assertions, add RabbitMQ
+- [x] 18.17 Update Helm `values.yaml` -- remove `redis` section, add `rabbitmq`, `ntfy`, `minio`
+- [x] 18.18 Update Helm `configmap.yaml` -- replace `redis-cli` with `sqlite3` commands
+- [x] 18.19 Update Helm `statefulset.yaml` -- remove `REDIS_HOST`/`REDIS_PORT`, add `RABBITMQ_URL`
+- [x] 18.20 Update Helm `cronjob-cleanup.yaml` -- remove Redis env vars
+- [x] 18.21 Update `k8s/gwa-runner-statefulset.yaml` -- remove Redis env vars
+- [x] 18.22 Update `k8s/gwa-cleanup-cronjob.yaml` -- remove Redis env vars
+- [x] 18.23 Verify `busy_timeout = 5000` on all `getDatabase()` calls
+- [x] 18.24 Verify write transactions use `BEGIN IMMEDIATE`
+- [x] 18.25 Add `SQLITE_BUSY` retry logic for critical paths
+- [x] 18.26 Run `bun run typecheck` -- verify clean
+- [x] 18.27 Run `bun test` -- verify all pass
 
 ### Phase 19: RabbitMQ Backbone + Orchestrator Extraction
-- [ ] 19.1 Install `amqplib@^0.10.7` and `@types/amqplib`
-- [ ] 19.2 Create `src/lib/amqp.ts` -- singleton connection + auto-reconnect + publisher confirms
-- [ ] 19.3 Implement `publishEvent()` with routing key `gwa.events.{owner}.{repo}.{session}.{eventType}`
-- [ ] 19.4 Implement `subscribeCommands()` for `gwa.commands.{owner}.{repo}.#`
-- [ ] 19.5 Integrate with `logActivity()` in `src/lib/db.ts` (fire-and-forget)
-- [ ] 19.6 Publish heartbeat every 30s to `gwa.heartbeat.{owner}.{repo}`
-- [ ] 19.7 Create `src/orchestrator/` directory structure
-- [ ] 19.8 Move webhook handler logic to `src/orchestrator/webhook-handler.ts`
-- [ ] 19.9 Create `src/orchestrator/session-aggregator.ts` -- subscribe to all pod events
-- [ ] 19.10 Create `src/orchestrator/rest-api.ts` with Bun.serve
-- [ ] 19.11 Implement all REST endpoints (sessions, answer, snapshots, recordings)
-- [ ] 19.12 Create `src/orchestrator/push-bridge.ts` -- ntfy.sh integration
-- [ ] 19.13 Implement per-session debounce (30s) in push bridge
-- [ ] 19.14 Implement global rate limit (5 notifications/minute)
-- [ ] 19.15 Implement per-session cooldown (5 minutes)
-- [ ] 19.16 Create orchestrator's own SQLite database for aggregated state
-- [ ] 19.17 Create `Dockerfile.orchestrator` for orchestrator image
-- [ ] 19.18 Create K8s Deployment manifest for orchestrator
-- [ ] 19.19 Add `RABBITMQ_URL` env var to runner StatefulSet
+- [x] 19.1 Install `amqplib@^0.10.7` and `@types/amqplib`
+- [x] 19.2 Create `src/lib/amqp.ts` -- singleton connection + auto-reconnect + publisher confirms
+- [x] 19.3 Implement `publishEvent()` with routing key `gwa.events.{owner}.{repo}.{session}.{eventType}`
+- [x] 19.4 Implement `subscribeCommands()` for `gwa.commands.{owner}.{repo}.#`
+- [x] 19.5 Integrate with `logActivity()` in `src/lib/db.ts` (fire-and-forget)
+- [x] 19.6 Publish heartbeat every 30s to `gwa.heartbeat.{owner}.{repo}`
+- [x] 19.7 Create `src/orchestrator/` directory structure
+- [x] 19.8 Move webhook handler logic to `src/orchestrator/webhook-handler.ts`
+- [x] 19.9 Create `src/orchestrator/session-aggregator.ts` -- subscribe to all pod events
+- [x] 19.10 Create `src/orchestrator/rest-api.ts` with Bun.serve
+- [x] 19.11 Implement all REST endpoints (sessions, answer, snapshots, recordings)
+- [x] 19.12 Create `src/orchestrator/push-bridge.ts` -- ntfy.sh integration
+- [x] 19.13 Implement per-session debounce (30s) in push bridge
+- [x] 19.14 Implement global rate limit (5 notifications/minute)
+- [x] 19.15 Implement per-session cooldown (5 minutes)
+- [x] 19.16 Create orchestrator's own SQLite database for aggregated state
+- [x] 19.17 Orchestrator uses same Dockerfile as runner (not separate image)
+- [x] 19.18 Create K8s Deployment manifest for orchestrator
+- [x] 19.19 Add `RABBITMQ_URL` env var to runner StatefulSet
 - [ ] 19.20 Add MQTT WebSocket Cloudflare tunnel route (WSS fallback)
 - [ ] 19.21 Configure Cloudflare Tunnel private network route for WARP path
 - [ ] 19.22 Configure Zero Trust Split Tunnels to include K3s service CIDR
-- [ ] 19.23 Enable `rabbitmq_mqtt` + `rabbitmq_web_mqtt` plugins
-- [ ] 19.24 Write AMQP publish/subscribe tests (mock broker)
-- [ ] 19.25 Write push bridge throttling tests
-- [ ] 19.26 Write orchestrator REST API tests
-- [ ] 19.27 Run `bun run typecheck` -- verify clean
-- [ ] 19.28 Run `bun test` -- verify all pass
+- [x] 19.23 Enable `rabbitmq_mqtt` + `rabbitmq_web_mqtt` plugins
+- [x] 19.24 Write AMQP publish/subscribe tests (mock broker)
+- [x] 19.25 Write push bridge throttling tests
+- [x] 19.26 Write orchestrator REST API tests
+- [x] 19.27 Run `bun run typecheck` -- verify clean
+- [x] 19.28 Run `bun test` -- verify all pass
 
 ### Phase 20: Live Terminal Streaming & Snapshots
 - [x] 20.1 Create `src/lib/terminal-relay.ts` -- main relay service module
@@ -1485,23 +1485,23 @@ Cost: ~$0.003/verification (Sonnet + small image)
 - [x] 22.8 Run full test suite -- verify all pass
 
 ### Phase 23: v4.0 Documentation & Cleanup
-- [ ] 23.1 Update `README.md` -- architecture, tech stack, orchestrator, RabbitMQ
-- [ ] 23.2 Update `CLAUDE.md` -- remove Redis, add XState/amqplib/ntfy.sh/MinIO
-- [ ] 23.3 Update `CHANGELOG.md` with v4.0 changes
-- [ ] 23.4 Bump `package.json` version to 4.0.0
-- [ ] 23.5 Final `bun run typecheck` + `bun test`
-- [ ] 23.6 Build all binaries: `bun run build`
-- [ ] 23.7 Build and push runner Docker image
-- [ ] 23.8 Build and push orchestrator Docker image
-- [ ] 23.9 Deploy orchestrator to K3s
-- [ ] 23.10 Deploy updated runner to K3s
+- [x] 23.1 Update `README.md` -- architecture, tech stack, orchestrator, RabbitMQ
+- [x] 23.2 Update `CLAUDE.md` -- remove Redis, add XState/amqplib/ntfy.sh/MinIO
+- [x] 23.3 Update `CHANGELOG.md` with v4.0 changes
+- [x] 23.4 Bump `package.json` version to 4.0.0
+- [x] 23.5 Final `bun run typecheck` + `bun test`
+- [x] 23.6 Build all binaries: `bun run build`
+- [x] 23.7 Build and push runner Docker image
+- [x] 23.8 Build and push orchestrator Docker image
+- [x] 23.9 Deploy orchestrator to K3s
+- [x] 23.10 Deploy updated runner to K3s
 - [ ] 23.11 End-to-end test: webhook -> RabbitMQ -> pod -> MQTT -> mobile + ntfy push
 
 ---
 
-**Version:** 4.0 (XState, RabbitMQ, Live Terminal, Android App)
+**Version:** 4.12.2 (XState, RabbitMQ, Live Terminal, Android App, Credential Management, Planning Redesign)
 **Implementation Method:** Claude Code CLI with bash_tool validation
-**Last Updated:** February 17, 2026
+**Last Updated:** February 24, 2026
 
 **Key Changes in v4.0:**
 - XState state machine replacing ad-hoc state transitions

@@ -4,15 +4,14 @@ You are a specialized agent for implementing the RabbitMQ messaging backbone in 
 
 ## Your Scope
 
-### Files to Create
+### Core Files
 - `src/lib/amqp.ts` - RabbitMQ client (connect, publish, subscribe, reconnect)
-- `src/lib/push-bridge.ts` - ntfy.sh push notification bridge
+- `src/orchestrator/push-bridge.ts` - ntfy.sh push notification bridge
 - `src/tests/amqp.test.ts` - Messaging tests
 
-### Files to Modify
-- `src/webhook/handler.ts` - Publish commands to RabbitMQ instead of workflow_dispatch
+### Related Files
+- `src/webhook/handler.ts` - Publishes commands to RabbitMQ
 - `src/transitions/*.ts` - Publish state_change events after transitions
-- `package.json` - Add `amqplib@^0.10.7`, remove `ioredis`
 
 ### Infrastructure
 - `k8s/rabbitmq-config.yaml` - RabbitMQ plugins and policies (if needed)
@@ -99,7 +98,5 @@ await fetch('https://ntfy.bto.bar/gwa-alerts', {
 
 ## Dependencies
 
-```bash
-bun add amqplib@^0.10.7
-bun remove ioredis
-```
+- `amqplib@^0.10.7` — already installed
+- `ioredis` — removed in v4.0
