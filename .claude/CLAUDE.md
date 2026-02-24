@@ -298,7 +298,6 @@ LSP is **not available** for `.sh` files (no bash-language-server configured).
 | Tool | Status | Notes |
 |------|--------|-------|
 | **LSP** | Working | TypeScript via `typescript-lsp` plugin |
-| **Semantic Search** | Not Available | No `claude-context` MCP server configured |
 | Grep/Glob | Available | Fallback only for TS; primary for non-TS files |
 
 ### Common Anti-Patterns to AVOID
