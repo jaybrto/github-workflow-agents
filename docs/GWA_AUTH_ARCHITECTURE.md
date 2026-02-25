@@ -445,7 +445,7 @@ export class ClaudeDialogError extends Error {
 **Key Features:**
 
 ```typescript
-// Auth failure detection (15 patterns)
+// Auth failure detection (17 patterns)
 const AUTH_FAILURE_PATTERNS = [
   "choose how to authenticate",
   "sign in at",
@@ -462,6 +462,8 @@ const AUTH_FAILURE_PATTERNS = [
   "usage limit",
   "you need to login",
   "please authenticate",
+  "token revoked",
+  "please run /login",
 ];
 
 export function detectAuthFailure(output: string): boolean

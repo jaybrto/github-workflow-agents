@@ -134,26 +134,27 @@ async function resumeWithFailures(issueNumber: number): Promise<void> {
     // Pre-load Claude config to prevent first-run dialogs
     preloadClaudeConfig();
 
-    if (isCredentialExpired()) {
-      log("warn", "OAuth token expired before QA resume, attempting recovery");
-      const provisioned = await provisionFromOrchestrator();
-      if (provisioned) {
-        preloadClaudeConfig();
-        log("info", "Credentials provisioned from orchestrator before QA resume");
-      } else {
-        const recovered = await tryRecoverCredentials();
-        if (!recovered) {
-          await octokit.issues.createComment({
-            owner,
-            repo: repoName,
-            issue_number: issueNumber,
-            body: "**Auth failure:** OAuth token is expired and no backup is available. QA resume aborted. Manual re-login required.",
-          });
-          throw new Error("Auth recovery failed: no valid credentials available");
-        }
-        preloadClaudeConfig();
-        log("info", "Credentials restored from MinIO before QA resume");
+    // Always check orchestrator for latest credentials before starting Claude.
+    // The orchestrator's background refresh may have issued a new token (revoking the old one),
+    // and the "current" fast path is a single HTTP roundtrip when nothing has changed.
+    const provisioned = await provisionFromOrchestrator();
+    if (provisioned) {
+      preloadClaudeConfig();
+      log("info", "Credentials provisioned from orchestrator before QA resume");
+    } else if (isCredentialExpired()) {
+      log("warn", "OAuth token expired and orchestrator unavailable, trying MinIO recovery");
+      const recovered = await tryRecoverCredentials();
+      if (!recovered) {
+        await octokit.issues.createComment({
+          owner,
+          repo: repoName,
+          issue_number: issueNumber,
+          body: "**Auth failure:** OAuth token is expired and no backup is available. QA resume aborted. Manual re-login required.",
+        });
+        throw new Error("Auth recovery failed: no valid credentials available");
       }
+      preloadClaudeConfig();
+      log("info", "Credentials restored from MinIO before QA resume");
     }
 
     // Ensure tmux session has the fresh token from disk (not the stale K8s env var)

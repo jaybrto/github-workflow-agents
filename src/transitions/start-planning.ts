@@ -317,27 +317,27 @@ The plan will be posted as a GitHub issue comment and the issue will be moved to
   log("info", "Starting Claude REPL");
   preloadClaudeConfig();
 
-  // Proactive: restore credentials if token is expired (orchestrator first, then MinIO)
-  if (isCredentialExpired()) {
-    log("warn", "OAuth token expired before REPL start, attempting recovery");
-    const provisioned = await provisionFromOrchestrator();
-    if (provisioned) {
-      preloadClaudeConfig();
-      log("info", "Credentials provisioned from orchestrator before REPL start");
-    } else {
-      const recovered = await tryRecoverCredentials();
-      if (!recovered) {
-        await octokit.issues.createComment({
-          owner,
-          repo: repoName,
-          issue_number: issueNumber,
-          body: "**Auth failure:** OAuth token is expired and no backup is available. Manual re-login required.",
-        });
-        throw new Error("Auth recovery failed: no valid credentials available");
-      }
-      preloadClaudeConfig();
-      log("info", "Credentials restored from MinIO before REPL start");
+  // Always check orchestrator for latest credentials before starting Claude.
+  // The orchestrator's background refresh may have issued a new token (revoking the old one),
+  // and the "current" fast path is a single HTTP roundtrip when nothing has changed.
+  const provisioned = await provisionFromOrchestrator();
+  if (provisioned) {
+    preloadClaudeConfig();
+    log("info", "Credentials provisioned from orchestrator before REPL start");
+  } else if (isCredentialExpired()) {
+    log("warn", "OAuth token expired and orchestrator unavailable, trying MinIO recovery");
+    const recovered = await tryRecoverCredentials();
+    if (!recovered) {
+      await octokit.issues.createComment({
+        owner,
+        repo: repoName,
+        issue_number: issueNumber,
+        body: "**Auth failure:** OAuth token is expired and no backup is available. Manual re-login required.",
+      });
+      throw new Error("Auth recovery failed: no valid credentials available");
     }
+    preloadClaudeConfig();
+    log("info", "Credentials restored from MinIO before REPL start");
   }
 
   // Ensure tmux session has the fresh token from disk (not the stale K8s env var)
