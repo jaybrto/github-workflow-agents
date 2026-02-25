@@ -111,6 +111,12 @@ The orchestrator (`src/orchestrator/`) runs as a separate service:
 - **Environment Provisioner**: Centralized credential/config bundle management with proactive OAuth refresh, tar.gz bundle generation, and expired bundle cleanup
 - **REST API**: Exposes `/sessions`, `/sessions/:id/answer`, `/sessions/:id/snapshots`, `/sessions/:id/recordings`, `/projects` CRUD, `/projects/:id/provision`, `/projects/:id/credentials`, `/provision-environment/*`
 
+### OAuth Credential Lifecycle
+
+- All transition handlers **unconditionally** call `provisionFromOrchestrator()` before launching Claude — do not gate behind `isCredentialExpired()`. The orchestrator's "current" fast path is a single HTTP roundtrip when nothing changed, but catches token revocation from background refresh.
+- Anthropic's introspection endpoint (`console.anthropic.com/v1/oauth/introspect`) is behind Cloudflare JS challenge — **unusable for automated token validation**. The only working automated endpoint is the refresh token endpoint (`/v1/oauth/token`).
+- MinIO credential backups and orchestrator bundles include S3 metadata: `account-uuid`, `email-address`, `organization-uuid`, `display-name`, `billing-type` — sourced from `~/.claude.json` oauthAccount block on pods, and from the credential record in the orchestrator.
+
 ### Terminal Streaming
 
 The terminal relay (`src/lib/terminal-relay.ts`) provides:
