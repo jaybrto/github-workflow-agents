@@ -25,6 +25,8 @@ const AUTH_FAILURE_PATTERNS = [
   "usage limit",
   "you need to login",
   "please authenticate",
+  "token revoked",
+  "please run /login",
 ];
 
 /**

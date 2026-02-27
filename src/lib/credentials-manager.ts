@@ -307,8 +307,33 @@ export async function tryRecoverCredentials(): Promise<boolean> {
 }
 
 /**
+ * Read account metadata from ~/.claude.json oauthAccount block.
+ * Returns S3-safe metadata key-value pairs for tagging credential backups.
+ */
+function getAccountMetadata(): Record<string, string> {
+  const meta: Record<string, string> = {};
+  try {
+    if (existsSync(getSettingsPath())) {
+      const raw = JSON.parse(readFileSync(getSettingsPath(), "utf-8"));
+      const account = raw?.oauthAccount;
+      if (account) {
+        if (account.accountUuid) meta["account-uuid"] = account.accountUuid;
+        if (account.emailAddress) meta["email-address"] = account.emailAddress;
+        if (account.organizationUuid) meta["organization-uuid"] = account.organizationUuid;
+        if (account.displayName) meta["display-name"] = account.displayName;
+        if (account.billingType) meta["billing-type"] = account.billingType;
+      }
+    }
+  } catch {
+    // Non-fatal — metadata is best-effort
+  }
+  return meta;
+}
+
+/**
  * Back up Claude credentials to MinIO.
  * Tars: ~/.claude/.credentials.json + ~/.claude.json
+ * Tags S3 objects with account/org metadata from ~/.claude.json for identification.
  */
 export async function backupCredentials(): Promise<boolean> {
   if (!MINIO_ACCESS_KEY || !MINIO_SECRET_KEY) {
@@ -347,6 +372,7 @@ export async function backupCredentials(): Promise<boolean> {
     const data = readFileSync(tarPath);
     const client = getS3Client();
     const backedUpAt = new Date().toISOString();
+    const accountMeta = getAccountMetadata();
 
     // Write to pod-specific path (primary)
     const podKey = podCredentialsKey(POD_NAME);
@@ -356,7 +382,7 @@ export async function backupCredentials(): Promise<boolean> {
         Key: podKey,
         Body: data,
         ContentType: "application/gzip",
-        Metadata: { "backed-up-at": backedUpAt, "pod-name": POD_NAME },
+        Metadata: { "backed-up-at": backedUpAt, "pod-name": POD_NAME, ...accountMeta },
       })
     );
 
@@ -367,12 +393,13 @@ export async function backupCredentials(): Promise<boolean> {
         Key: LEGACY_CREDENTIALS_S3_KEY,
         Body: data,
         ContentType: "application/gzip",
-        Metadata: { "backed-up-at": backedUpAt, "source-pod": POD_NAME },
+        Metadata: { "backed-up-at": backedUpAt, "source-pod": POD_NAME, ...accountMeta },
       })
     );
 
+    const accountLabel = accountMeta["email-address"] || accountMeta["account-uuid"] || "unknown";
     console.log(
-      `[CredentialsManager] Credentials backed up to MinIO: ${podKey} + legacy key`
+      `[CredentialsManager] Credentials backed up to MinIO: ${podKey} + legacy key (account: ${accountLabel})`
     );
     success = true;
   } catch (e) {

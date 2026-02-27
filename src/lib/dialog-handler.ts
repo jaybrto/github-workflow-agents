@@ -71,6 +71,11 @@ const KNOWN_DIALOGS: Array<{
     keys: ["Escape"],
     reason: "Dismissing OAuth browser flow (token already cached)",
   },
+  {
+    pattern: /token revoked|please run \/login/i,
+    keys: ["Escape"],
+    reason: "Token revoked — cannot dismiss, need credential refresh",
+  },
 ];
 
 const SYSTEM_PROMPT = `You are monitoring a terminal where Claude Code CLI is starting up.

@@ -394,22 +394,21 @@ export async function createSwarmSession(
     // Pre-load Claude config to prevent first-run dialogs
     preloadClaudeConfig();
 
-    // Pre-flight credential check: recover from MinIO if expired
-    if (isCredentialExpired()) {
-      log("info", "Credentials expired, attempting orchestrator provision");
-      const provisioned = await provisionFromOrchestrator();
-      if (!provisioned) {
-        log("info", "Orchestrator provision failed, trying MinIO recovery");
-        const recovered = await tryRecoverCredentials();
-        if (recovered) {
-          preloadClaudeConfig();
-          log("info", "Credentials restored from MinIO before swarm start");
-        } else {
-          log("warn", "No valid credentials available - workers may fail auth");
-        }
-      } else {
+    // Always check orchestrator for latest credentials before starting Claude.
+    // The orchestrator's background refresh may have issued a new token (revoking the old one),
+    // and the "current" fast path is a single HTTP roundtrip when nothing has changed.
+    const provisioned = await provisionFromOrchestrator();
+    if (provisioned) {
+      preloadClaudeConfig();
+      log("info", "Credentials provisioned from orchestrator before swarm start");
+    } else if (isCredentialExpired()) {
+      log("warn", "OAuth token expired and orchestrator unavailable, trying MinIO recovery");
+      const recovered = await tryRecoverCredentials();
+      if (recovered) {
         preloadClaudeConfig();
-        log("info", "Credentials provisioned from orchestrator before swarm start");
+        log("info", "Credentials restored from MinIO before swarm start");
+      } else {
+        log("warn", "No valid credentials available - workers may fail auth");
       }
     }
 

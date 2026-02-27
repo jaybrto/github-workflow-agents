@@ -16,7 +16,7 @@ import {
 import { getDatabase } from "./db.js";
 import { log, withSpan, Metrics } from "./telemetry.js";
 import { ClaudeAuthError, detectAuthFailure, preloadClaudeConfig } from "./claude.js";
-import { getAccessToken } from "./credentials-manager.js";
+import { getAccessToken, provisionFromOrchestrator } from "./credentials-manager.js";
 import { handleDialogIfPresent, ClaudeDialogError } from "./dialog-handler.js";
 
 // ============================================================================
@@ -200,6 +200,15 @@ export async function startREPL(
 
       // Pre-load Claude config to prevent first-run dialogs
       preloadClaudeConfig();
+
+      // Always check orchestrator for latest credentials before starting Claude.
+      // The orchestrator's background refresh may have issued a new token (revoking the old one),
+      // and the "current" fast path is a single HTTP roundtrip when nothing has changed.
+      const provisioned = await provisionFromOrchestrator();
+      if (provisioned) {
+        preloadClaudeConfig();
+        log("info", "Credentials provisioned from orchestrator before REPL start");
+      }
 
       // Ensure tmux session has the fresh token from disk (not the stale K8s env var)
       const freshToken = getAccessToken();

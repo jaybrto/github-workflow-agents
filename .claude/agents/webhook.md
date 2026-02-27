@@ -57,9 +57,9 @@ The webhook is a standalone HTTP server deployed in its own pod. It:
 - HTTP server on port 3000 (internal), exposed via tunnel
 - JSON body parsing with size limits
 
-## Future Work (v4.0)
+## Completed (v4.0+)
 
-- Webhook becomes part of the **orchestrator service** (separate extraction)
-- Instead of `workflow_dispatch`, publish commands to RabbitMQ
-- Add rate limiting per repository
-- Add circuit breaker for downstream failures
+- Webhook now publishes commands to RabbitMQ via AMQP instead of `workflow_dispatch`
+- Orchestrator webhook handler (`src/orchestrator/webhook-handler.ts`) provides the integrated path
+- Timing-safe HMAC verification with `crypto.timingSafeEqual`
+- Delivery deduplication with 1-hour TTL prevents replay attacks

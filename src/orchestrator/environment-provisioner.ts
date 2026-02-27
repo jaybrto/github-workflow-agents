@@ -461,18 +461,23 @@ export class EnvironmentProvisioner {
     // Build tar.gz in-process using tar-stream
     const tarData = await this.buildTarGz(project, credential);
 
-    // Upload to MinIO
+    // Upload to MinIO — include account/org metadata for identification
+    const bundleMetadata: Record<string, string> = {
+      "project-id": project.id,
+      "bundle-id": bundleId,
+      "credential-id": credential.id,
+    };
+    if (credential.emailAddress) bundleMetadata["email-address"] = credential.emailAddress;
+    if (credential.accountUuid) bundleMetadata["account-uuid"] = credential.accountUuid;
+    if (credential.organizationUuid) bundleMetadata["organization-uuid"] = credential.organizationUuid;
+
     await this.s3.send(
       new PutObjectCommand({
         Bucket: this.s3Bucket,
         Key: s3Key,
         Body: tarData,
         ContentType: "application/gzip",
-        Metadata: {
-          "project-id": project.id,
-          "bundle-id": bundleId,
-          "credential-id": credential.id,
-        },
+        Metadata: bundleMetadata,
       }),
     );
 

@@ -89,9 +89,12 @@ CREATE INDEX idx_sessions_project_item ON sessions(project_item_id);
 UPDATE config SET value = '2' WHERE key = 'schema_version';
 ```
 
-## Future Work (v4.0)
+## Completed (v4.0+)
 
-- Add `xstate_snapshot TEXT` and `xstate_schema_version INTEGER` to sessions table
-- Remove Redis-related status fields
-- Add RabbitMQ message deduplication table (or use in-memory Map)
-- Consolidate `PRSession`/`REPLSession` Redis types into canonical `SessionState` enum
+- XState snapshot persistence in sessions table (`xstate_snapshot`, `xstate_schema_version`)
+- Redis fully removed — all state in SQLite + RabbitMQ
+- Canonical `SessionState` enum in `src/shared/types.ts`
+- `status_comment_id` column for lifecycle comment tracking
+- `terminal_snapshots` table for SVG snapshots
+- Orchestrator has its own SQLite DB for cross-pod aggregation
+- Environment provisioner tables: `projects`, `project_credentials`, `environment_bundles`

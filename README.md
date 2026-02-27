@@ -1,4 +1,4 @@
-# GitHub Workflow Agents (GWA) v4.0
+# GitHub Workflow Agents (GWA) v4.12
 
 Automated Claude Code integration for GitHub with persistent sessions, multi-agent orchestration, and GitHub Projects workflow automation on Kubernetes.
 
@@ -159,18 +159,35 @@ GWA handles all possible project board column transitions via webhook. When an i
 
 | Tool | Purpose |
 |------|---------|
+| **Lifecycle** ||
 | `gwa-orchestrate` | Main PR work lifecycle |
 | `gwa-respond` | Handle `@claude-answer` responses |
 | `gwa-cleanup` | Clean up stale sessions (CronJob) |
+| `gwa-session-complete` | Signal session completion |
+| `gwa-ask-question` | Post PR question for human input |
+| **Planning & Implementation** ||
 | `gwa-architect` | Create plans and spawn workers |
 | `gwa-worker` | Execute assigned sub-tasks |
-| `gwa-setup-project` | Create GitHub Project for new repo |
+| `gwa-planning-complete` | Post plan comment, update status, cleanup worktree |
+| **Column Transitions** ||
 | `gwa-start-planning` | Todo → Planning transition |
 | `gwa-inject-prompt` | Planning → In Progress transition |
 | `gwa-run-playwright` | In Progress → QA transition |
 | `gwa-resume-with-failures` | QA → In Progress transition |
 | `gwa-send-answer` | Blocked → Previous transition |
 | `gwa-deploy-and-cleanup` | Review → Done transition |
+| `gwa-provision-environment` | On-demand credential re-provisioning |
+| **Credentials & Config** ||
+| `gwa-provision` | Pod startup provisioning from orchestrator |
+| `gwa-push-credentials` | Push local credentials to orchestrator |
+| `gwa-credentials-backup` | Backup credentials to MinIO (CronJob) |
+| `gwa-credential-history` | Query credential refresh history |
+| **Infrastructure** ||
+| `gwa-setup-project` | Create GitHub Project for new repo |
+| `gwa-health-check` | Pod health check |
+| `gwa-debug-db` | SQLite database inspector |
+| `gwa-terminal-relay` | WebSocket terminal streaming server |
+| `gwa-webhook` | GitHub webhook handler |
 
 ### Tech Stack
 
@@ -290,10 +307,19 @@ bun test --coverage
 
 | Test File | Coverage |
 |-----------|----------|
-| `db.test.ts` | Schema validation, CRUD operations |
+| `db.test.ts` | Schema validation, CRUD operations, transactions |
 | `imports.test.ts` | Library export validation |
 | `templates.test.ts` | File existence, JSON validation |
 | `preflight.test.ts` | Pre-deployment checks |
+| `state-machine.test.ts` | XState v5 transitions and guards |
+| `dialog-handler.test.ts` | TUI dialog detection and auto-dismissal |
+| `auth-recovery.test.ts` | OAuth credential recovery flows |
+| `webhook-security.test.ts` | HMAC verification, replay prevention |
+| `terminal-relay.test.ts` | WebSocket relay, snapshots |
+| `environment-provisioner.test.ts` | Credential bundle management |
+| `orchestrator-api.test.ts` | REST API endpoint validation |
+| `behavioral/*.test.ts` | XState lifecycle, AMQP transitions, concurrent sessions |
+| `e2e/full-lifecycle.test.ts` | Full idle→planning→done lifecycle |
 
 ### Building the Container
 
@@ -319,6 +345,10 @@ git push origin main
 │   ├── gwa-cleanup-cronjob.yaml
 │   └── charts/                # Helm charts
 │       └── gwa-onboarding/    # ArgoCD onboarding
+├── docs/                      # Documentation and handoff files
+│   ├── HANDOFF.md             # Session handoff notes
+│   ├── EXPLORATION_INDEX.md   # Codebase exploration index
+│   └── GWA_AUTH_ARCHITECTURE.md # Auth system architecture
 ├── src/
 │   ├── orchestrate.ts         # Main PR orchestration
 │   ├── respond.ts             # Answer handling
@@ -326,6 +356,15 @@ git push origin main
 │   ├── architect.ts           # Plan creation, worker spawning
 │   ├── worker.ts              # Sub-task execution
 │   ├── setup-project.ts       # GitHub Project setup
+│   ├── planning-complete.ts   # Post plan comment, cleanup worktree
+│   ├── session-complete.ts    # Signal session completion
+│   ├── ask-question.ts        # Post PR question for human input
+│   ├── provision.ts           # Pod startup provisioning from orchestrator
+│   ├── push-credentials.ts    # Push local credentials to orchestrator
+│   ├── credentials-backup.ts  # Backup credentials to MinIO
+│   ├── credential-history.ts  # Query credential refresh history
+│   ├── health-check.ts        # Pod health check
+│   ├── debug-db.ts            # SQLite database inspector
 │   ├── shared/                # Canonical shared types
 │   │   ├── types.ts           # SessionState, SessionEvent, AmqpMessage, etc.
 │   │   └── index.ts           # Re-exports
@@ -334,21 +373,34 @@ git push origin main
 │   │   ├── webhook-handler.ts # HMAC-verified webhook → AMQP commands
 │   │   ├── session-aggregator.ts # Cross-pod session state aggregation
 │   │   ├── push-bridge.ts     # ntfy.sh push notifications
-│   │   └── rest-api.ts        # REST API (sessions, answers, snapshots)
+│   │   ├── rest-api.ts        # REST API (sessions, answers, snapshots, provisioning)
+│   │   └── environment-provisioner.ts # Centralized credential/config bundle management
+│   ├── webhook/               # Standalone webhook handler
+│   │   └── handler.ts         # GitHub webhook receiver
 │   ├── transitions/           # Column transition handlers
 │   │   ├── start-planning.ts
 │   │   ├── inject-prompt.ts
 │   │   ├── run-playwright.ts
 │   │   ├── resume-with-failures.ts
 │   │   ├── send-answer.ts
-│   │   └── deploy-and-cleanup.ts
+│   │   ├── deploy-and-cleanup.ts
+│   │   └── provision-environment.ts # On-demand credential re-provisioning
 │   ├── tests/                 # Test suite
 │   │   ├── db.test.ts
 │   │   ├── imports.test.ts
 │   │   ├── templates.test.ts
-│   │   └── preflight.test.ts
+│   │   ├── preflight.test.ts
+│   │   ├── state-machine.test.ts
+│   │   ├── dialog-handler.test.ts
+│   │   ├── auth-recovery.test.ts
+│   │   ├── webhook-security.test.ts
+│   │   ├── terminal-relay.test.ts
+│   │   ├── environment-provisioner.test.ts
+│   │   ├── orchestrator-api.test.ts
+│   │   ├── behavioral/       # XState lifecycle behavioral tests
+│   │   └── e2e/              # End-to-end lifecycle tests
 │   └── lib/
-│       ├── claude.ts          # Claude Code subprocess
+│       ├── claude.ts          # Claude Code subprocess, config preloading
 │       ├── github.ts          # GitHub API client
 │       ├── projects.ts        # GitHub Projects v2 GraphQL
 │       ├── db.ts              # SQLite database
@@ -357,11 +409,13 @@ git push origin main
 │       ├── terminal-relay.ts  # WebSocket relay, snapshots, asciicast recordings
 │       ├── tmux.ts            # Tmux session management
 │       ├── swarm.ts           # Multi-agent orchestration
+│       ├── credentials-manager.ts # OAuth credential backup/restore/refresh
+│       ├── dialog-handler.ts  # Haiku-powered TUI dialog auto-dismissal
 │       ├── telemetry.ts       # OpenTelemetry setup
 │       ├── pr-filter.ts       # Claude PR detection
 │       ├── plan-sync.ts       # Plan-to-issue linking
 │       ├── task-analyzer.ts   # REPL vs headless decision
-│       ├── comment-generator.ts # Smart PR comments
+│       ├── comment-generator.ts # Smart PR/issue comments
 │       ├── repl-session.ts    # REPL lifecycle
 │       ├── checkpoint.ts      # State snapshots
 │       └── recovery.ts        # Session recovery
@@ -468,6 +522,9 @@ NTFY_URL=https://ntfy.bto.bar/gwa
 # Orchestrator
 ORCHESTRATOR_PORT=3001
 ORCHESTRATOR_DB_PATH=/tmp/gwa-orchestrator.db
+ORCHESTRATOR_URL=http://gwa-orchestrator.gwa:3001
+GWA_PROJECT_ID=<project-id>
+GWA_API_KEY=<api-key>
 
 # Terminal Streaming
 WS_PORT=8080
@@ -503,6 +560,17 @@ The orchestrator runs as a separate service that aggregates session state across
 | `/sessions/:id/answer` | POST | Send an answer to a blocked session |
 | `/sessions/:id/snapshots` | GET | Terminal snapshots for a session |
 | `/sessions/:id/recordings` | GET | Asciicast recordings for a session |
+| `/projects` | GET/POST | Project CRUD for environment provisioning |
+| `/projects/:id/credentials` | POST | Push credentials to orchestrator |
+| `/projects/:id/provision` | POST | Generate config bundle for pod startup |
+| `/projects/:id/refresh` | POST | Manual OAuth token refresh |
+| `/projects/:id/health` | GET | Credential health status |
+| `/projects/:id/credentials/history` | GET | Credential refresh history with bundle IDs |
+| `/projects/:id/credentials/prune` | POST | Prune expired credentials and bundles |
+| `/provision-environment/start` | POST | Start on-demand credential re-provisioning |
+| `/provision-environment/complete` | POST | Complete re-provisioning |
+| `/provision-environment/refresh` | POST | Refresh stuck auth windows |
+| `/provision-environment/status` | GET | Provisioning status |
 
 ### Push Notifications
 

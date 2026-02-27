@@ -6,6 +6,16 @@
 - Moved Android dashboard plan files from `plan/` to `docs/` with `AndroidApp-` prefix
 - Updated plan files (`AndroidApp-01-project-scaffolding.md`, `AndroidApp-02-design-system.md`) to specify Material 3 Adaptive library architecture — `NavigationSuiteScaffold`, `NavigableListDetailPaneScaffold`, zero manual breakpoint math
 - Updated internal cross-references in master plan for new file locations
+## [4.12.3] - 2026-02-24
+
+### Fixed
+- `claude.ts`: Add "token revoked" and "please run /login" to auth failure detection patterns — fixes silent failure when OAuth token is revoked server-side after background credential refresh
+- `start-planning`, `resume-with-failures`, `repl-session`, `swarm`: Always call `provisionFromOrchestrator()` before launching Claude instead of only when `isCredentialExpired()` — ensures pods pick up refreshed credentials even when old token is revoked but not yet expired by timestamp
+- `dialog-handler`: Add known dialog pattern for "token revoked" / "/login" error screen
+
+### Added
+- `credentials-manager`: MinIO credential backups now include account/org S3 metadata (`account-uuid`, `email-address`, `organization-uuid`, `display-name`, `billing-type`) read from `~/.claude.json` oauthAccount block
+- `environment-provisioner`: Bundle uploads to MinIO now include `email-address`, `account-uuid`, `organization-uuid` metadata from the credential record
 
 ## [4.12.2] - 2026-02-24
 

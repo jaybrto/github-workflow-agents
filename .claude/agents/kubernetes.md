@@ -80,12 +80,12 @@ gwa-runner-0 (StatefulSet)
     └── Window 2-N: workers (parallel tasks)
 ```
 
-## Future Work (v4.0)
+## Completed (v4.0+)
 
-- Add RabbitMQ deployment/service manifests
-- Add ntfy.sh deployment for push notifications
-- Add MinIO bucket configuration for asciicast recordings
-- Add Cloudflare Tunnel routes for MQTT WSS, terminal relay, ntfy
-- Add orchestrator service deployment (separate pod)
-- Remove Redis-related manifests and env vars
-- Add WARP private network routing configuration
+- RabbitMQ deployed to cluster, env vars wired via Vault/ESO
+- ntfy.sh deployed at `ntfy.bto.bar` for push notifications
+- MinIO bucket `gwa-recordings` for asciicast recordings and credential storage
+- Orchestrator service deployed as separate pod (`gwa-orchestrator.yaml`) with Longhorn PVC
+- Redis fully removed from all manifests and env vars
+- Vault + External Secrets Operator integration (`vault-external-secrets.yaml`)
+- Credentials backup CronJob (`gwa-credentials-backup-cronjob.yaml`)

@@ -13,25 +13,34 @@ Automated Claude Code integration for GitHub PRs with persistent sessions.
 
 ```
 ├── .claude/              # Claude configuration
-│   └── CLAUDE.md         # This file
+│   ├── CLAUDE.md         # This file
+│   └── agents/           # Agent definitions (15 specialized agents)
 ├── .github/workflows/    # GitHub Actions (thin triggers)
+├── docs/                 # Documentation and handoff files
 ├── k8s/                  # Kubernetes manifests
 ├── scripts/              # Shell scripts (orchestration only)
 ├── src/                  # Bun TypeScript source
 │   ├── orchestrate.ts    # Main PR work lifecycle
 │   ├── respond.ts        # Handle @claude-answer responses
 │   ├── cleanup.ts        # Stale PR cleanup
+│   ├── planning-complete.ts # Post plan comment, cleanup worktree
+│   ├── provision.ts      # Pod startup provisioning from orchestrator
+│   ├── push-credentials.ts # Push credentials to orchestrator
+│   ├── credentials-backup.ts # Backup credentials to MinIO
 │   ├── shared/           # Canonical shared types (SessionState, AmqpMessage, etc.)
-│   ├── orchestrator/     # Orchestrator service (REST API, push bridge, aggregator)
+│   ├── orchestrator/     # Orchestrator service (REST API, push bridge, aggregator, env provisioner)
+│   ├── webhook/          # Standalone webhook handler
+│   ├── transitions/      # Column transition handlers (7 handlers)
 │   └── lib/              # Shared libraries
-│       ├── claude.ts     # Claude Code subprocess
+│       ├── claude.ts     # Claude Code subprocess, config preloading
 │       ├── tmux.ts       # node-tmux wrapper
 │       ├── amqp.ts       # RabbitMQ AMQP client
 │       ├── state-machine.ts # XState v5 session lifecycle
 │       ├── terminal-relay.ts # WebSocket streaming, snapshots, recordings
 │       ├── github.ts     # @octokit/rest client
 │       ├── db.ts         # SQLite database (WAL mode)
-│       └── k8s.ts        # @kubernetes/client-node
+│       ├── credentials-manager.ts # OAuth credential backup/restore/refresh
+│       └── dialog-handler.ts # Haiku-powered TUI dialog auto-dismissal
 ├── Dockerfile            # Multi-stage Bun build
 └── package.json          # Dependencies
 ```
@@ -43,13 +52,15 @@ All external interactions use proper SDKs — no CLI output parsing:
 | Concern     | Package                   | Usage                       |
 | ----------- | ------------------------- | --------------------------- |
 | Claude Code | subprocess                | `stream-json` output format |
+| Claude API  | `@anthropic-ai/sdk`       | Dialog handler (Haiku)      |
 | Tmux        | `node-tmux`               | Session/window management   |
 | Kubernetes  | `@kubernetes/client-node` | Pod exec, status            |
 | GitHub      | `@octokit/rest`           | PRs, comments, status       |
 | XState      | `xstate`                  | State machine lifecycle     |
 | AMQP        | `amqplib`                 | RabbitMQ messaging          |
 | ntfy.sh     | HTTP POST (fetch)         | Push notifications          |
-| MinIO       | `@aws-sdk/client-s3`      | Recording storage           |
+| MinIO       | `@aws-sdk/client-s3`      | Recording + credential storage |
+| Tar         | `tar-stream`              | Credential bundle packaging |
 
 ## Git Workflow
 
@@ -97,7 +108,14 @@ The orchestrator (`src/orchestrator/`) runs as a separate service:
 - **Webhook Handler**: Receives GitHub webhooks, verifies HMAC signatures (timing-safe), deduplicates deliveries, publishes AMQP commands
 - **Session Aggregator**: Subscribes to `gwa.events.#`, maintains cross-pod session state in its own SQLite DB
 - **Push Bridge**: Subscribes to events, sends ntfy.sh notifications for blocked/error/complete with rate limiting
-- **REST API**: Exposes `/sessions`, `/sessions/:id/answer`, `/sessions/:id/snapshots`, `/sessions/:id/recordings`
+- **Environment Provisioner**: Centralized credential/config bundle management with proactive OAuth refresh, tar.gz bundle generation, and expired bundle cleanup
+- **REST API**: Exposes `/sessions`, `/sessions/:id/answer`, `/sessions/:id/snapshots`, `/sessions/:id/recordings`, `/projects` CRUD, `/projects/:id/provision`, `/projects/:id/credentials`, `/provision-environment/*`
+
+### OAuth Credential Lifecycle
+
+- All transition handlers **unconditionally** call `provisionFromOrchestrator()` before launching Claude — do not gate behind `isCredentialExpired()`. The orchestrator's "current" fast path is a single HTTP roundtrip when nothing changed, but catches token revocation from background refresh.
+- Anthropic's introspection endpoint (`console.anthropic.com/v1/oauth/introspect`) is behind Cloudflare JS challenge — **unusable for automated token validation**. The only working automated endpoint is the refresh token endpoint (`/v1/oauth/token`).
+- MinIO credential backups and orchestrator bundles include S3 metadata: `account-uuid`, `email-address`, `organization-uuid`, `display-name`, `billing-type` — sourced from `~/.claude.json` oauthAccount block on pods, and from the credential record in the orchestrator.
 
 ### Terminal Streaming
 
@@ -298,7 +316,6 @@ LSP is **not available** for `.sh` files (no bash-language-server configured).
 | Tool | Status | Notes |
 |------|--------|-------|
 | **LSP** | Working | TypeScript via `typescript-lsp` plugin |
-| **Semantic Search** | Not Available | No `claude-context` MCP server configured |
 | Grep/Glob | Available | Fallback only for TS; primary for non-TS files |
 
 ### Common Anti-Patterns to AVOID
