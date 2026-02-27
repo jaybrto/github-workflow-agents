@@ -20,17 +20,17 @@ This is a single-user app (not distributed), purpose-built for the `jaybrto` hom
 
 | # | Feature | Plan File | Complexity | Dependencies |
 |---|---------|-----------|------------|--------------|
-| 01 | [Project Scaffolding & Build System](./01-project-scaffolding.md) | `01-project-scaffolding.md` | Medium | None |
-| 02 | [Design System & Theme](./02-design-system.md) | `02-design-system.md` | Medium | F01 |
-| 03 | [Networking & API Layer](./03-networking-api.md) | `03-networking-api.md` | High | F01 |
-| 04 | [MQTT & Real-time Events](./04-mqtt-realtime.md) | `04-mqtt-realtime.md` | High | F01, F03 |
-| 05 | [Claude Code Hooks Event Stream](./05-hooks-event-stream.md) | `05-hooks-event-stream.md` | High | F04, Infra |
-| 06 | [Dashboard Home Screen](./06-dashboard-home.md) | `06-dashboard-home.md` | Medium | F02, F03, F04 |
-| 07 | [Session Management](./07-session-management.md) | `07-session-management.md` | High | F02, F03, F04, F06 |
-| 08 | [Terminal Viewer](./08-terminal-viewer.md) | `08-terminal-viewer.md` | High | F03, F07 |
-| 09 | [Infrastructure Monitoring](./09-infra-monitoring.md) | `09-infra-monitoring.md` | Medium | F02, F03, F06 |
-| 10 | [Notifications & Background Services](./10-notifications.md) | `10-notifications.md` | High | F03, F04 |
-| 11 | [Claude LLM Event Viewer](./11-llm-event-viewer.md) | `11-llm-event-viewer.md` | High | F02, F04, F05, F07 |
+| 01 | [Project Scaffolding & Build System](./AndroidApp-01-project-scaffolding.md) | `AndroidApp-01-project-scaffolding.md` | Medium | None |
+| 02 | [Design System & Theme](./AndroidApp-02-design-system.md) | `AndroidApp-02-design-system.md` | Medium | F01 |
+| 03 | [Networking & API Layer](./AndroidApp-03-networking-api.md) | `AndroidApp-03-networking-api.md` | High | F01 |
+| 04 | [MQTT & Real-time Events](./AndroidApp-04-mqtt-realtime.md) | `AndroidApp-04-mqtt-realtime.md` | High | F01, F03 |
+| 05 | [Claude Code Hooks Event Stream](./AndroidApp-05-hooks-event-stream.md) | `AndroidApp-05-hooks-event-stream.md` | High | F04, Infra |
+| 06 | [Dashboard Home Screen](./AndroidApp-06-dashboard-home.md) | `AndroidApp-06-dashboard-home.md` | Medium | F02, F03, F04 |
+| 07 | [Session Management](./AndroidApp-07-session-management.md) | `AndroidApp-07-session-management.md` | High | F02, F03, F04, F06 |
+| 08 | [Terminal Viewer](./AndroidApp-08-terminal-viewer.md) | `AndroidApp-08-terminal-viewer.md` | High | F03, F07 |
+| 09 | [Infrastructure Monitoring](./AndroidApp-09-infra-monitoring.md) | `AndroidApp-09-infra-monitoring.md` | Medium | F02, F03, F06 |
+| 10 | [Notifications & Background Services](./AndroidApp-10-notifications.md) | `AndroidApp-10-notifications.md` | High | F03, F04 |
+| 11 | [Claude LLM Event Viewer](./AndroidApp-11-llm-event-viewer.md) | `AndroidApp-11-llm-event-viewer.md` | High | F02, F04, F05, F07 |
 
 ---
 
@@ -206,7 +206,7 @@ States: `idle`, `planning`, `in_progress`, `qa`, `blocked`, `review`, `done`
 
 Claude Code emits structured events via its hooks system. The GWA orchestrator will publish these as AMQP events that the Android app consumes for real-time visibility into Claude's tool usage, thinking process, and code generation.
 
-See [Feature 05: Claude Code Hooks Event Stream](./05-hooks-event-stream.md) for full details.
+See [Feature 05: Claude Code Hooks Event Stream](./AndroidApp-05-hooks-event-stream.md) for full details.
 
 ### Hook Event Categories
 - **Tool calls** — Bash, Read, Write, Edit, Glob, Grep invocations with arguments/results

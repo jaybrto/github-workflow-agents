@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.13.0] - 2026-02-27
+
+### Changed
+- Moved Android dashboard plan files from `plan/` to `docs/` with `AndroidApp-` prefix
+- Updated plan files (`AndroidApp-01-project-scaffolding.md`, `AndroidApp-02-design-system.md`) to specify Material 3 Adaptive library architecture — `NavigationSuiteScaffold`, `NavigableListDetailPaneScaffold`, zero manual breakpoint math
+- Updated internal cross-references in master plan for new file locations
 ## [4.12.3] - 2026-02-24
 
 ### Fixed
