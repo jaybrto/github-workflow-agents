@@ -1,16 +1,11 @@
 # Changelog
 
-## [4.13.0] - 2026-02-24
+## [4.13.0] - 2026-02-27
 
-### Added
-- Android dashboard project scaffolding (`android/`) with Kotlin + Jetpack Compose + Material 3
-- `MainScaffold.kt`: Root navigation using `NavigationSuiteScaffold` — auto-switches between BottomNavigationBar (phone), NavigationRail (tablet), and NavigationDrawer (large tablet)
-- `UsersScreen.kt`: List-detail layout using `NavigableListDetailPaneScaffold` — side-by-side on tablet, stacked with predictive back on phone
-- `DashboardScreen.kt`: Stub dashboard with `LazyVerticalGrid` using `GridCells.Adaptive` for responsive metric cards
-- `SettingsScreen.kt`: Stub settings placeholder
-- Dark-first Material 3 theme (GitHub-dark inspired palette) with session state colors
-- Full Gradle build system with Version Catalog (`libs.versions.toml`) including Material 3 Adaptive dependencies
-- Updated plan files (`01-project-scaffolding.md`, `02-design-system.md`) to reflect Material 3 Adaptive architecture — replacing manual WindowSizeClass branching
+### Changed
+- Moved Android dashboard plan files from `plan/` to `docs/` with `AndroidApp-` prefix
+- Updated plan files (`AndroidApp-01-project-scaffolding.md`, `AndroidApp-02-design-system.md`) to specify Material 3 Adaptive library architecture — `NavigationSuiteScaffold`, `NavigableListDetailPaneScaffold`, zero manual breakpoint math
+- Updated internal cross-references in master plan for new file locations
 
 ## [4.12.2] - 2026-02-24
 
